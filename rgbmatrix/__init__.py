@@ -85,12 +85,29 @@ class RGBMatrix:
         return Canvas(self.cols, self.rows)
 
     def SwapOnVSync(self, canvas: Canvas):
-        # scale the small matrix image and enqueue for display
-        img = canvas.img.resize(
-            (self.cols * self.scale, self.rows * self.scale), resample=Image.NEAREST
-        )
+        from PIL import Image, ImageDraw
+
+        s = self.scale
+        gap = max(1, s // 5)
+        radius = (s - gap * 2) // 2
+
+        out = Image.new("RGB", (self.cols * s, self.rows * s), (0, 0, 0))
+        draw = ImageDraw.Draw(out)
+
+        pixels = canvas.img.load()
+        for y in range(self.rows):
+            for x in range(self.cols):
+                r, g, b = pixels[x, y]
+                cx = x * s + s // 2
+                cy = y * s + s // 2
+                color = (r, g, b) if (r or g or b) else (20, 20, 20)
+                draw.ellipse(
+                    [cx - radius, cy - radius, cx + radius, cy + radius],
+                    fill=color,
+                )
+
         with self._lock:
-            self._queue.append(img)
+            self._queue.append(out)
         return Canvas(self.cols, self.rows)
 
     def run(self):
