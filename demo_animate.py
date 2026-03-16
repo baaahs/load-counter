@@ -1,12 +1,12 @@
 """Demo script to run animations on the local rgbmatrix emulator.
 
-Uses the local `rgbmatrix` emulator package and `animations.splash` to
+Uses the local `rgbmatrix` emulator package and `animations.fountain` to
 exercise the animation without any hardware attached.
 """
 import threading
 import time
 from rgbmatrix import RGBMatrix, RGBMatrixOptions, graphics
-from animations import splash, draw_counter_display
+from animations import fountain, draw_counter_display
 
 
 def animate(m):
@@ -22,11 +22,10 @@ def animate(m):
 
     try:
         while True:
-            canvas = draw_counter_display(m, canvas, small, big, 123, 456, counter)
+            canvas = draw_counter_display(m, canvas, small, big, counter)
             time.sleep(0.6)
+            canvas = fountain(m, canvas, small, big, counter, counter + 1)
             counter += 1
-            canvas = splash(m, canvas, big, counter)
-            time.sleep(0.2)
     except KeyboardInterrupt:
         print("Demo stopped")
 
