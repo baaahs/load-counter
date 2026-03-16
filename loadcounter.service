@@ -1,0 +1,17 @@
+[Unit]
+Description=Load Counter (ultrasonic sensors + RGB matrix)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/jul/loadcounter
+ExecStart=/home/jul/loadcounter/env/bin/python /home/jul/loadcounter/load-counter.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=loadcounter
+
+[Install]
+WantedBy=multi-user.target
