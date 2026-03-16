@@ -5,6 +5,7 @@ exercise the animation without any hardware attached.
 """
 import threading
 import time
+import random
 from rgbmatrix import RGBMatrix, RGBMatrixOptions, graphics
 from animations import fountain, draw_counter_display
 
@@ -18,12 +19,12 @@ def animate(m):
     big = graphics.Font()
     big.LoadFont("fonts/10x20.bdf")
 
-    counter = 0
+    counter = random.randint(100, 2000)
 
     try:
         while True:
             canvas = draw_counter_display(m, canvas, small, big, counter)
-            time.sleep(0.6)
+            time.sleep(1.0)
             canvas = fountain(m, canvas, small, big, counter, counter + 1)
             counter += 1
     except KeyboardInterrupt:
