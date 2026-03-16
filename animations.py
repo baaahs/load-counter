@@ -1,5 +1,6 @@
 import math
 import time
+import random
 from rgbmatrix import graphics
 
 
@@ -45,6 +46,105 @@ def splash(matrix, canvas, font, count):
 
         canvas = matrix.SwapOnVSync(canvas)
         time.sleep(SPLASH_FRAME_DELAY)
+
+    return canvas
+
+
+def fountain(matrix, canvas, font, big_font, old_count, new_count):
+    """Spermatozoids swim left-to-right; each one writes new number pixels as it passes through."""
+    W = getattr(matrix, "cols", canvas.width)
+    H = getattr(matrix, "rows", canvas.height)
+
+    label = "LOAD COUNT"
+    lw = graphics.TextWidth(font, label)
+    label_bottom = 7
+
+    def num_draw_pos(n):
+        nw, nh = graphics.TextSize(big_font, str(n))
+        num_top = label_bottom + (H - label_bottom - nh) // 2 - 3
+        return (W - nw) // 2, num_top + nh
+
+    def render_pixels(n):
+        tmp = matrix.CreateFrameCanvas()
+        nx, ny = num_draw_pos(n)
+        graphics.DrawText(tmp, big_font, nx, ny, graphics.Color(255, 255, 0), str(n))
+        pix = tmp.img.load()
+        return [(x, y, *pix[x, y]) for y in range(H) for x in range(W) if any(pix[x, y])]
+
+    old_pixels = render_pixels(old_count)
+    new_pixels = render_pixels(new_count)
+
+    # One sperm per row across the number area, staggered launches
+    STAGGER = 3
+    sperm_list = []
+    for i, sy in enumerate(range(5, H - 2)):
+        sperm_list.append({
+            'hx': -14.0,
+            'hy': float(sy),
+            'vx': random.uniform(1.3, 2.0),
+            'amp': random.uniform(0.7, 1.5),
+            'freq': random.uniform(0.45, 0.75),
+            'phase': random.uniform(0, 2 * math.pi),
+            'launch': i * STAGGER,
+            'tail_len': random.randint(7, 12),
+        })
+
+    last_launch = sperm_list[-1]['launch']
+    FRAMES = last_launch + int(W / 1.3) + 20
+    FRAME_DELAY = 0.022
+
+    written_cols = set()
+
+    for frame in range(FRAMES):
+        canvas.Clear()
+
+        # Advance sperm and record which columns have been passed
+        for sp in sperm_list:
+            if frame < sp['launch']:
+                continue
+            sp['hx'] += sp['vx']
+            col = int(sp['hx'])
+            if 0 <= col < W:
+                written_cols.add(col)
+
+        # Draw number: written columns → new, rest → old
+        for px, py, r, g, b in new_pixels:
+            if px in written_cols:
+                canvas.SetPixel(px, py, r, g, b)
+        for px, py, r, g, b in old_pixels:
+            if px not in written_cols:
+                canvas.SetPixel(px, py, r, g, b)
+
+        # Draw label
+        graphics.DrawText(canvas, font, (W - lw) // 2, 6,
+                          graphics.Color(180, 180, 255), label)
+
+        # Draw each active sperm
+        for sp in sperm_list:
+            if frame < sp['launch']:
+                continue
+            hx = sp['hx']
+            hy = sp['hy']
+            t = frame - sp['launch']
+            phase = sp['phase'] + t * 0.4
+
+            # Head: small oval
+            for dx, dy in [(0, 0), (1, 0), (-1, 0), (0, -1), (0, 1)]:
+                hpx, hpy = int(round(hx)) + dx, int(round(hy)) + dy
+                if 0 <= hpx < W and 0 <= hpy < H:
+                    canvas.SetPixel(hpx, hpy, 255, 255, 230)
+
+            # Tail: sinusoidal wave trailing behind the head
+            tail_len = sp['tail_len']
+            for i in range(1, tail_len + 1):
+                tx = int(round(hx)) - i - 1
+                ty = int(round(hy + sp['amp'] * math.sin(phase + i * sp['freq'])))
+                if 0 <= tx < W and 0 <= ty < H:
+                    fade = (tail_len - i + 1) / tail_len
+                    canvas.SetPixel(tx, ty, int(220 * fade), int(220 * fade), int(140 * fade))
+
+        canvas = matrix.SwapOnVSync(canvas)
+        time.sleep(FRAME_DELAY)
 
     return canvas
 
