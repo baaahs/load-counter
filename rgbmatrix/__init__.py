@@ -69,15 +69,16 @@ class RGBMatrix:
         self._tk_canvas = tk.Canvas(self.root, width=w, height=h, bg="black", highlightthickness=0)
         self._tk_canvas.pack()
         self._photo = None
-        self._image_id = self._tk_canvas.create_image(0, 0, anchor="nw")
         self._poll()
 
     def _poll(self):
         with self._lock:
             if self._queue:
                 img = self._queue.pop(0)
-                self._photo = ImageTk.PhotoImage(img)
-                self._tk_canvas.itemconfig(self._image_id, image=self._photo)
+                self._photo = ImageTk.PhotoImage(img, master=self.root)
+                self._tk_canvas.delete("all")
+                self._tk_canvas.create_image(0, 0, anchor="nw", image=self._photo)
+                self._tk_canvas.image = self._photo
         self.root.after(20, self._poll)
 
     def CreateFrameCanvas(self):
