@@ -57,7 +57,7 @@ def fountain(matrix, canvas, font, big_font, old_count, new_count):
 
     label = "LOAD COUNT"
     lw = graphics.TextWidth(font, label)
-    label_bottom = 7
+    label_bottom = 9
 
     def num_draw_pos(n):
         nw, nh = graphics.TextSize(big_font, str(n))
@@ -184,7 +184,7 @@ def draw_counter_display(matrix, canvas, font, big_font, counter):
     # center number vertically in the space below the label (rows 7–H)
     num = str(counter)
     nw, nh = graphics.TextSize(big_font, num)
-    label_bottom = 7
+    label_bottom = 9
     num_top = label_bottom + (H - label_bottom - nh) // 2 - 3
     graphics.DrawText(canvas, big_font, (W - nw) // 2, num_top + nh, count_color, num)
 
