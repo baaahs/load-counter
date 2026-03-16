@@ -59,11 +59,17 @@ class RGBMatrix:
         self._queue: list = []
         self._lock = threading.Lock()
 
+        w = self.cols * self.scale
+        h = self.rows * self.scale
+
         self.root = tk.Tk()
         self.root.title("RGBMatrix Emulator")
+        self.root.resizable(False, False)
         self.root.protocol("WM_DELETE_WINDOW", self.root.quit)
-        self._label = tk.Label(self.root)
-        self._label.pack()
+        self._tk_canvas = tk.Canvas(self.root, width=w, height=h, bg="black", highlightthickness=0)
+        self._tk_canvas.pack()
+        self._photo = None
+        self._image_id = self._tk_canvas.create_image(0, 0, anchor="nw")
         self._poll()
 
     def _poll(self):
@@ -71,7 +77,7 @@ class RGBMatrix:
             if self._queue:
                 img = self._queue.pop(0)
                 self._photo = ImageTk.PhotoImage(img)
-                self._label.config(image=self._photo)
+                self._tk_canvas.itemconfig(self._image_id, image=self._photo)
         self.root.after(20, self._poll)
 
     def CreateFrameCanvas(self):

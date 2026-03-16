@@ -18,13 +18,15 @@ def animate(m):
     big = graphics.Font()
     big.LoadFont("fonts/9x18.bdf")
 
+    counter = 0
+
     try:
         while True:
-            for counter in (37, 38):
-                canvas = draw_counter_display(m, canvas, small, big, 123, 456, counter)
-                time.sleep(0.6)
-                canvas = splash(m, canvas, big, counter + 1)
-                time.sleep(0.2)
+            canvas = draw_counter_display(m, canvas, small, big, 123, 456, counter)
+            time.sleep(0.6)
+            counter += 1
+            canvas = splash(m, canvas, big, counter)
+            time.sleep(0.2)
     except KeyboardInterrupt:
         print("Demo stopped")
 
