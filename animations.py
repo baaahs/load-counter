@@ -74,10 +74,12 @@ def fountain(matrix, canvas, font, big_font, old_count, new_count):
     old_pixels = render_pixels(old_count)
     new_pixels = render_pixels(new_count)
 
-    # One sperm per row across the number area, staggered launches
+    # One sperm per row, shuffled launch order, staggered
     STAGGER = 3
+    y_positions = list(range(5, H - 2))
+    random.shuffle(y_positions)
     sperm_list = []
-    for i, sy in enumerate(range(5, H - 2)):
+    for i, sy in enumerate(y_positions):
         sperm_list.append({
             'hx': -14.0,
             'hy': float(sy),
@@ -93,26 +95,33 @@ def fountain(matrix, canvas, font, big_font, old_count, new_count):
     FRAMES = last_launch + int(W / 1.3) + 20
     FRAME_DELAY = 0.022
 
-    written_cols = set()
+    # Index new pixels by column for fast per-sperm lookup
+    new_by_col = {}
+    for px, py, r, g, b in new_pixels:
+        new_by_col.setdefault(px, []).append((py, r, g, b))
+
+    written = set()  # (x, y) pixels of new number that have been written
 
     for frame in range(FRAMES):
         canvas.Clear()
 
-        # Advance sperm and record which columns have been passed
+        # Advance sperm; write new number pixels within reach of each sperm's head
         for sp in sperm_list:
             if frame < sp['launch']:
                 continue
             sp['hx'] += sp['vx']
-            col = int(sp['hx'])
-            if 0 <= col < W:
-                written_cols.add(col)
+            col = int(round(sp['hx']))
+            if 0 <= col < W and col in new_by_col:
+                for py, r, g, b in new_by_col[col]:
+                    if abs(py - sp['hy']) <= 2:
+                        written.add((col, py))
 
-        # Draw number: written columns → new, rest → old
+        # Draw number: written pixels → new, unwritten → old
         for px, py, r, g, b in new_pixels:
-            if px in written_cols:
+            if (px, py) in written:
                 canvas.SetPixel(px, py, r, g, b)
         for px, py, r, g, b in old_pixels:
-            if px not in written_cols:
+            if (px, py) not in written:
                 canvas.SetPixel(px, py, r, g, b)
 
         # Draw label
