@@ -16,7 +16,7 @@ def animate(m):
     small = graphics.Font()
     small.LoadFont("fonts/5x7.bdf")
     big = graphics.Font()
-    big.LoadFont("fonts/9x18.bdf")
+    big.LoadFont("fonts/10x20.bdf")
 
     counter = 0
 

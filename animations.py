@@ -134,7 +134,7 @@ def fountain(matrix, canvas, font, big_font, old_count, new_count):
                 canvas.SetPixel(px, py, r, g, b)
 
         # Draw label
-        graphics.DrawText(canvas, font, (W - lw) // 2, 6,
+        graphics.DrawText(canvas, font, (W - lw) // 2, 8,
                           graphics.Color(180, 180, 255), label)
 
         # Draw each active sperm
@@ -179,7 +179,7 @@ def draw_counter_display(matrix, canvas, font, big_font, counter):
 
     label = "LOAD COUNT"
     lw = graphics.TextWidth(font, label)
-    graphics.DrawText(canvas, font, (W - lw) // 2, 6, label_color, label)
+    graphics.DrawText(canvas, font, (W - lw) // 2, 8, label_color, label)
 
     # center number vertically in the space below the label (rows 7–H)
     num = str(counter)
