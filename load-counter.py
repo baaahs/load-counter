@@ -59,8 +59,12 @@ while True:
 
     # Display counter on matrix
     offscreen_canvas.Clear()
-    text_color = graphics.Color(255, 255, 0)
-    dim_color = graphics.Color(80, 80, 0)
-    graphics.DrawText(offscreen_canvas, font, 0, 10, dim_color, f"{distance1:.0f}  {distance2:.0f}")
-    graphics.DrawText(offscreen_canvas, big_font, 0, 30, text_color, str(counter))
+    label = "LOAD COUNT"
+    label_color = graphics.Color(180, 180, 255)
+    count_color = graphics.Color(255, 255, 0)
+    lw = graphics.TextWidth(font, label)
+    graphics.DrawText(offscreen_canvas, font, (64 - lw) // 2, 10, label_color, label)
+    num = str(counter)
+    nw = graphics.TextWidth(big_font, num)
+    graphics.DrawText(offscreen_canvas, big_font, (64 - nw) // 2, 30, count_color, num)
     offscreen_canvas = matrix.SwapOnVSync(offscreen_canvas)

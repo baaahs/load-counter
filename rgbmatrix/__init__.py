@@ -119,5 +119,7 @@ class RGBMatrix:
 Font = graphics.Font
 Color = graphics.Color
 DrawText = graphics.DrawText
+TextWidth = graphics.TextWidth
+TextSize = graphics.TextSize
 
-__all__ = ["RGBMatrixOptions", "RGBMatrix", "Font", "Color", "DrawText", "graphics"]
+__all__ = ["RGBMatrixOptions", "RGBMatrix", "Font", "Color", "DrawText", "TextWidth", "TextSize", "graphics"]

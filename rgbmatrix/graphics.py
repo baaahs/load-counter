@@ -31,17 +31,20 @@ class Font:
         # Best-effort: if a TTF is provided, load it; otherwise guess size from filename
         try:
             if path.lower().endswith((".ttf", ".otf")):
-                # choose guessed size from filename numbers, fallback to 12
                 size = _guess_size_from_name(path) or 12
                 self.pil_font = ImageFont.truetype(path, size)
                 self.size = size
                 return
         except Exception:
-            self.pil_font = None
+            pass
 
-        # Fallback: use default font
-        self.pil_font = ImageFont.load_default()
-        self.size = 10
+        # For BDF/other fonts, use guessed size with load_default
+        size = _guess_size_from_name(path) or 10
+        self.size = size
+        try:
+            self.pil_font = ImageFont.load_default(size=size)
+        except TypeError:
+            self.pil_font = ImageFont.load_default()
 
 
 def _guess_size_from_name(path: str) -> int | None:
@@ -52,6 +55,24 @@ def _guess_size_from_name(path: str) -> int | None:
         # pick largest number as size
         return int(m[-1])
     return None
+
+
+def TextWidth(font: Font, text: str) -> int:
+    """Return the pixel width of text rendered with the given font."""
+    w, _ = TextSize(font, text)
+    return w
+
+
+def TextSize(font: Font, text: str):
+    """Return (width, height) of text rendered with the given font."""
+    from PIL import ImageFont
+
+    pil_font = font.pil_font if (font and getattr(font, "pil_font", None)) else ImageFont.load_default()
+    from PIL import ImageDraw, Image
+    tmp = Image.new("RGB", (1, 1))
+    draw = ImageDraw.Draw(tmp)
+    bbox = draw.textbbox((0, 0), text, font=pil_font)
+    return bbox[2] - bbox[0], bbox[3] - bbox[1]
 
 
 def DrawText(canvas, font: Font, x: int, y: int, color: Color, text: str):

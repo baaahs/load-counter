@@ -49,14 +49,25 @@ def splash(matrix, canvas, font, count):
     return canvas
 
 
-def draw_counter_display(matrix, canvas, font, big_font, distance1, distance2, counter):
-    """Draw the main counter and distance readout and swap the canvas.
+def draw_counter_display(matrix, canvas, font, big_font, counter):
+    """Draw 'LOAD COUNT' label centered at top, counter centered below."""
+    W = getattr(matrix, "cols", canvas.width)
+    H = getattr(matrix, "rows", canvas.height)
 
-    Convenience helper for demos and for keeping UI code in one place.
-    """
     canvas.Clear()
-    text_color = graphics.Color(255, 255, 0)
-    dim_color = graphics.Color(80, 80, 0)
-    graphics.DrawText(canvas, font, 0, 10, dim_color, f"{distance1:.0f}  {distance2:.0f}")
-    graphics.DrawText(canvas, big_font, 0, matrix.rows - 2, text_color, str(counter))
+
+    label_color = graphics.Color(180, 180, 255)
+    count_color = graphics.Color(255, 255, 0)
+
+    label = "LOAD COUNT"
+    lw = graphics.TextWidth(font, label)
+    graphics.DrawText(canvas, font, (W - lw) // 2, 6, label_color, label)
+
+    # center number vertically in the space below the label (rows 7–H)
+    num = str(counter)
+    nw, nh = graphics.TextSize(big_font, num)
+    label_bottom = 7
+    num_top = label_bottom + (H - label_bottom - nh) // 2 - 3
+    graphics.DrawText(canvas, big_font, (W - nw) // 2, num_top + nh, count_color, num)
+
     return matrix.SwapOnVSync(canvas)
