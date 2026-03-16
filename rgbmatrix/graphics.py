@@ -67,6 +67,7 @@ def DrawText(canvas, font: Font, x: int, y: int, color: Color, text: str):
     draw = ImageDraw.Draw(canvas.img)
     pil_font = font.pil_font if (font and getattr(font, "pil_font", None)) else ImageFont.load_default()
     # compute height and adjust so `y` works like baseline
-    w, h = draw.textsize(text, font=pil_font)
+    bbox = draw.textbbox((0, 0), text, font=pil_font)
+    h = bbox[3] - bbox[1]
     top = max(0, y - h)
     draw.text((x, top), text, fill=(color.r, color.g, color.b), font=pil_font)
