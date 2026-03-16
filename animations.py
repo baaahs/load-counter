@@ -82,8 +82,9 @@ def fountain(matrix, canvas, font, big_font, old_count, new_count):
     for i, sy in enumerate(y_positions):
         sperm_list.append({
             'hx': -14.0,
+            'prev_hx': -14.0,
             'hy': float(sy),
-            'vx': random.uniform(1.3, 2.0),
+            'vx': random.uniform(2.2, 3.2),
             'amp': random.uniform(0.7, 1.5),
             'freq': random.uniform(0.45, 0.75),
             'phase': random.uniform(0, 2 * math.pi),
@@ -100,7 +101,8 @@ def fountain(matrix, canvas, font, big_font, old_count, new_count):
     for px, py, r, g, b in new_pixels:
         new_by_col.setdefault(px, []).append((py, r, g, b))
 
-    written = set()  # (x, y) pixels of new number that have been written
+    written = set()  # (x, y) new-number pixels that have been revealed
+    swept = set()   # (x, y) positions passed by a sperm — old pixels here are erased
 
     for frame in range(FRAMES):
         canvas.Clear()
@@ -109,19 +111,26 @@ def fountain(matrix, canvas, font, big_font, old_count, new_count):
         for sp in sperm_list:
             if frame < sp['launch']:
                 continue
+            sp['prev_hx'] = sp['hx']
             sp['hx'] += sp['vx']
-            col = int(round(sp['hx']))
-            if 0 <= col < W and col in new_by_col:
-                for py, r, g, b in new_by_col[col]:
-                    if abs(py - sp['hy']) <= 2:
-                        written.add((col, py))
+            hy = sp['hy']
+            # sweep every column between prev and current position (no skipped pixels)
+            col_start = max(0, int(sp['prev_hx']))
+            col_end = min(W - 1, int(sp['hx']))
+            for col in range(col_start, col_end + 1):
+                for dy in range(-2, 3):
+                    swept.add((col, int(hy) + dy))
+                if col in new_by_col:
+                    for py, r, g, b in new_by_col[col]:
+                        if abs(py - hy) <= 2:
+                            written.add((col, py))
 
-        # Draw number: written pixels → new, unwritten → old
+        # Draw number: written pixels → new, unswept old pixels → old
         for px, py, r, g, b in new_pixels:
             if (px, py) in written:
                 canvas.SetPixel(px, py, r, g, b)
         for px, py, r, g, b in old_pixels:
-            if (px, py) not in written:
+            if (px, py) not in swept:
                 canvas.SetPixel(px, py, r, g, b)
 
         # Draw label
