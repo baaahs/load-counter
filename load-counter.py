@@ -18,6 +18,7 @@ TIMEOUT = 20  # seconds
 WIDTH = 64
 HEIGHT = 32
 COUNT_TOP = 11
+FOUNTAIN_Y_OFFSET = -1
 
 FOUNTAIN_STAGGER = 3
 FOUNTAIN_FRAME_DELAY = 0.022
@@ -125,7 +126,7 @@ def fountain(matrix, canvas, font, big_font, old_count, new_count):
     new_width = text_width(big_font, new_text)
     old_x = (WIDTH - old_width) // 2
     new_x = (WIDTH - new_width) // 2
-    new_y = count_baseline(big_font)
+    new_y = count_baseline(big_font) + FOUNTAIN_Y_OFFSET
     fallback_width = big_font.CharacterWidth(ord("0"))
 
     old_pixels = text_pixel_positions(BDF_GLYPHS, old_text, old_x, new_y, fallback_width)
