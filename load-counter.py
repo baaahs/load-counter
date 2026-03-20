@@ -1,7 +1,6 @@
 import math
 import os
 import random
-import sys
 import time
 
 from rgbmatrix import RGBMatrix, RGBMatrixOptions, graphics
@@ -10,8 +9,6 @@ import adafruit_us100
 import serial
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-if BASE_DIR not in sys.path:
-    sys.path.insert(0, BASE_DIR)
 
 THRESHOLD = 40  # cm
 TIMEOUT = 20  # seconds
@@ -19,6 +16,10 @@ WIDTH = 64
 HEIGHT = 32
 COUNT_TOP = 11
 FOUNTAIN_Y_OFFSET = -1
+COUNTER_STATE_DIR = "/var/lib/loadcounter"
+COUNTER_STATE_PATH = os.path.join(COUNTER_STATE_DIR, "counter-state.txt")
+PRIOR_COUNTER_STATE_PATH = "/var/tmp/loadcounter/counter-state.txt"
+LEGACY_COUNTER_STATE_PATH = os.path.join(BASE_DIR, "counter-state.txt")
 
 FOUNTAIN_STAGGER = 3
 FOUNTAIN_FRAME_DELAY = 0.029
@@ -27,6 +28,49 @@ BDF_GLYPHS = {}
 
 def text_width(font, text):
     return sum(font.CharacterWidth(ord(char)) for char in text)
+
+
+def load_counter(path, legacy_path=None):
+    last_error = None
+    paths = [path]
+    if legacy_path and legacy_path != path:
+        paths.append(legacy_path)
+
+    for candidate in paths:
+        for _ in range(3):
+            try:
+                with open(candidate, "r", encoding="utf-8") as handle:
+                    raw = handle.read().strip()
+                if raw:
+                    return max(0, int(raw))
+                time.sleep(0.05)
+            except FileNotFoundError:
+                break
+            except (OSError, ValueError) as exc:
+                last_error = exc
+                time.sleep(0.05)
+
+    if last_error is not None:
+        print(f"Failed to load counter from {path}: {last_error}", flush=True)
+    return 0
+
+
+def save_counter(path, value):
+    temp_path = f"{path}.tmp"
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(temp_path, "w", encoding="utf-8") as handle:
+            handle.write(f"{value}\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+    except OSError as exc:
+        print(f"Failed to save counter to {path}: {exc}", flush=True)
+
+
+def ensure_counter_state_file(path, value):
+    if not os.path.exists(path):
+        save_counter(path, value)
 
 
 def count_baseline(big_font):
@@ -221,7 +265,11 @@ BDF_GLYPHS = load_bdf_glyphs(os.path.join(BASE_DIR, "fonts/10x20.bdf"))
 matrix = RGBMatrix(options=options)
 offscreen_canvas = matrix.CreateFrameCanvas()
 
-counter = 0
+counter = load_counter(COUNTER_STATE_PATH, PRIOR_COUNTER_STATE_PATH)
+if counter == 0:
+    counter = load_counter(COUNTER_STATE_PATH, LEGACY_COUNTER_STATE_PATH)
+ensure_counter_state_file(COUNTER_STATE_PATH, counter)
+print(f"Loaded counter={counter} from {COUNTER_STATE_PATH}", flush=True)
 sensor1_triggered_at = None
 offscreen_canvas = draw_counter_display(matrix, offscreen_canvas, font, big_font, counter)
 
@@ -232,18 +280,19 @@ while True:
     if distance1 < THRESHOLD:
         if sensor1_triggered_at is None:
             sensor1_triggered_at = time.time()
-            print(f"Sensor 1 triggered: {distance1} cm")
+            print(f"Sensor 1 triggered: {distance1} cm", flush=True)
 
     if sensor1_triggered_at is not None:
         if time.time() - sensor1_triggered_at > TIMEOUT:
-            print(f"Timeout - sensor 2 did not trigger within {TIMEOUT}s")
+            print(f"Timeout - sensor 2 did not trigger within {TIMEOUT}s", flush=True)
             sensor1_triggered_at = None
         elif distance2 < THRESHOLD:
             old_count = counter
             counter += 1
-            print(f"Count! #{counter} (sensor1->sensor2)")
+            save_counter(COUNTER_STATE_PATH, counter)
+            print(f"Count! #{counter} (sensor1->sensor2)", flush=True)
             sensor1_triggered_at = None
             offscreen_canvas = fountain(matrix, offscreen_canvas, font, big_font, old_count, counter)
 
-    print(f"d1={distance1:.0f}cm d2={distance2:.0f}cm count={counter}")
+    print(f"d1={distance1:.0f}cm d2={distance2:.0f}cm count={counter}", flush=True)
     offscreen_canvas = draw_counter_display(matrix, offscreen_canvas, font, big_font, counter)
