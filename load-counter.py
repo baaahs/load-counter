@@ -23,8 +23,51 @@ LEGACY_COUNTER_STATE_PATH = os.path.join(BASE_DIR, "counter-state.txt")
 
 FOUNTAIN_STAGGER = 3
 FOUNTAIN_FRAME_DELAY = 0.029
-BOOT_HOLD_SECONDS = 2.2
+BOOT_HOLD_SECONDS = 5.0
+BOOT_BACKGROUND = (0, 0, 0)
 BDF_GLYPHS = {}
+BOOT_TONE_MAP = {
+    " ": (0, 0, 0),
+    ".": (16, 16, 16),
+    ":": (64, 64, 64),
+    "-": (112, 112, 112),
+    "=": (168, 168, 168),
+    "#": (232, 232, 232),
+}
+BOOT_LOGO_ROWS = [
+    "      :::....:::      :::....:::      ",
+    "    :::.........::  ::.........:::    ",
+    "   ::.............::.............::   ",
+    "  :................................:  ",
+    " ::................................:: ",
+    " :..=####=..................=####=..: ",
+    ":...:-####..................####-:...:",
+    ":.....:-##..................##-:.....:",
+    ":...........::..........::...........:",
+    "...........:=#=........=#=:...........",
+    "...........:=.##::::::##.=:...........",
+    "...........:=-##########-=:...........",
+    "............=############=............",
+    ":...........=############=...........:",
+    ":...........=############=...........:",
+    " :..........-=##########=-..........: ",
+    " :..........:=##########=:..........: ",
+    "  :..........=##########=..........:  ",
+    "  :..........-=########=-..........:  ",
+    "   :.........:=########=:.........:   ",
+    "    :.........=########=.........:    ",
+    "     :........-=######=-........:     ",
+    "     ::.......:=######=:.......::     ",
+    "       ........=#=##=#=........       ",
+    "        :......=##--##=......:        ",
+    "         :.....-=####=-.....:         ",
+    "          :.....=----=.....:          ",
+    "            :...:====:...:            ",
+    "            ::..........::            ",
+    "              ::......::              ",
+    "                :....:                ",
+    "                  ..                  ",
+]
 
 
 def text_width(font, text):
@@ -96,17 +139,11 @@ def boot_screen(matrix, canvas, font, big_font):
     canvas.Clear()
     for y in range(HEIGHT):
         for x in range(WIDTH):
-            canvas.SetPixel(x, y, 0, 0, 0)
-
-    text = "baaahs"
-    shadow_color = graphics.Color(70, 70, 70)
-    text_color = graphics.Color(255, 255, 255)
-    text_width_px = text_width(big_font, text)
-    text_x = (WIDTH - text_width_px) // 2
-    baseline_y = 23
-
-    graphics.DrawText(canvas, big_font, text_x + 1, baseline_y + 1, shadow_color, text)
-    graphics.DrawText(canvas, big_font, text_x, baseline_y, text_color, text)
+            canvas.SetPixel(x, y, *BOOT_BACKGROUND)
+    x_offset = (WIDTH - len(BOOT_LOGO_ROWS[0])) // 2
+    for y, row in enumerate(BOOT_LOGO_ROWS):
+        for x, pixel in enumerate(row):
+            canvas.SetPixel(x + x_offset, y, *BOOT_TONE_MAP[pixel])
 
     canvas = matrix.SwapOnVSync(canvas)
     time.sleep(BOOT_HOLD_SECONDS)
