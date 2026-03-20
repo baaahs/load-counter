@@ -23,8 +23,10 @@ LEGACY_COUNTER_STATE_PATH = os.path.join(BASE_DIR, "counter-state.txt")
 
 FOUNTAIN_STAGGER = 3
 FOUNTAIN_FRAME_DELAY = 0.029
-BOOT_HOLD_SECONDS = 5.0
+BOOT_HOLD_SECONDS = 7.0
 BOOT_BACKGROUND = (0, 0, 0)
+BOOT_FADE_STEPS = 8
+BOOT_FADE_FRAME_DELAY = 0.05
 BDF_GLYPHS = {}
 BOOT_TONE_MAP = {
     " ": (0, 0, 0),
@@ -135,16 +137,24 @@ def fill_face(canvas, cx, top_y, height, top_width, bottom_width, color):
                 canvas.SetPixel(x, y, *color)
 
 
-def boot_screen(matrix, canvas, font, big_font):
-    canvas.Clear()
+def scale_color(color, factor):
+    return tuple(int(channel * factor) for channel in color)
+
+
+def render_boot_screen(canvas, brightness=1.0):
+    background = scale_color(BOOT_BACKGROUND, brightness)
     for y in range(HEIGHT):
         for x in range(WIDTH):
-            canvas.SetPixel(x, y, *BOOT_BACKGROUND)
+            canvas.SetPixel(x, y, *background)
     x_offset = (WIDTH - len(BOOT_LOGO_ROWS[0])) // 2
     for y, row in enumerate(BOOT_LOGO_ROWS):
         for x, pixel in enumerate(row):
-            canvas.SetPixel(x + x_offset, y, *BOOT_TONE_MAP[pixel])
+            canvas.SetPixel(x + x_offset, y, *scale_color(BOOT_TONE_MAP[pixel], brightness))
 
+
+def boot_screen(matrix, canvas, font, big_font):
+    canvas.Clear()
+    render_boot_screen(canvas)
     canvas = matrix.SwapOnVSync(canvas)
     time.sleep(BOOT_HOLD_SECONDS)
     return canvas
@@ -264,10 +274,14 @@ def text_pixel_positions(glyphs, text, origin_x, baseline_y, fallback_width):
 
 def draw_counter_display(matrix, canvas, font, big_font, counter):
     canvas.Clear()
+    render_counter_display(canvas, font, big_font, counter)
+    return matrix.SwapOnVSync(canvas)
 
+
+def render_counter_display(canvas, font, big_font, counter, label_brightness=1.0, count_brightness=1.0):
     label = "LOAD COUNT"
-    label_color = graphics.Color(180, 180, 255)
-    count_color = graphics.Color(255, 255, 0)
+    label_color = graphics.Color(*scale_color((180, 180, 255), label_brightness))
+    count_color = graphics.Color(*scale_color((255, 255, 0), count_brightness))
 
     label_width = text_width(font, label)
     graphics.DrawText(canvas, font, (WIDTH - label_width) // 2, 8, label_color, label)
@@ -277,7 +291,28 @@ def draw_counter_display(matrix, canvas, font, big_font, counter):
     num_y = count_baseline(big_font)
     graphics.DrawText(canvas, big_font, (WIDTH - count_width) // 2, num_y, count_color, num)
 
-    return matrix.SwapOnVSync(canvas)
+
+def fade_boot_to_counter(matrix, canvas, font, big_font, counter):
+    for step in range(BOOT_FADE_STEPS, -1, -1):
+        canvas.Clear()
+        render_boot_screen(canvas, step / BOOT_FADE_STEPS)
+        canvas = matrix.SwapOnVSync(canvas)
+        time.sleep(BOOT_FADE_FRAME_DELAY)
+
+    for step in range(0, BOOT_FADE_STEPS + 1):
+        canvas.Clear()
+        render_counter_display(
+            canvas,
+            font,
+            big_font,
+            counter,
+            label_brightness=step / BOOT_FADE_STEPS,
+            count_brightness=step / BOOT_FADE_STEPS,
+        )
+        canvas = matrix.SwapOnVSync(canvas)
+        time.sleep(BOOT_FADE_FRAME_DELAY)
+
+    return canvas
 
 
 def fountain(matrix, canvas, font, big_font, old_count, new_count):
@@ -392,6 +427,7 @@ ensure_counter_state_file(COUNTER_STATE_PATH, counter)
 print(f"Loaded counter={counter} from {COUNTER_STATE_PATH}", flush=True)
 sensor1_triggered_at = None
 offscreen_canvas = boot_screen(matrix, offscreen_canvas, font, big_font)
+offscreen_canvas = fade_boot_to_counter(matrix, offscreen_canvas, font, big_font, counter)
 offscreen_canvas = draw_counter_display(matrix, offscreen_canvas, font, big_font, counter)
 
 while True:
