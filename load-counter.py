@@ -17,15 +17,79 @@ THRESHOLD = 40  # cm
 TIMEOUT = 20  # seconds
 WIDTH = 64
 HEIGHT = 32
-CX, CY = WIDTH // 2, HEIGHT // 2
-MAX_RADIUS = math.sqrt(CX ** 2 + CY ** 2)
 
 FOUNTAIN_STAGGER = 3
 FOUNTAIN_FRAME_DELAY = 0.022
+BDF_GLYPHS = {}
 
 
 def text_width(font, text):
     return sum(font.CharacterWidth(ord(char)) for char in text)
+
+
+def load_bdf_glyphs(path):
+    glyphs = {}
+    encoding = None
+    dwidth = 0
+    bbx = None
+    in_bitmap = False
+    bitmap_rows = []
+
+    with open(path, "r", encoding="latin-1") as handle:
+        for raw_line in handle:
+            line = raw_line.strip()
+            if line.startswith("ENCODING"):
+                encoding = int(line.split()[1])
+            elif line.startswith("DWIDTH"):
+                dwidth = int(line.split()[1])
+            elif line.startswith("BBX"):
+                parts = line.split()
+                bbx = (int(parts[1]), int(parts[2]), int(parts[3]), int(parts[4]))
+            elif line == "BITMAP":
+                in_bitmap = True
+                bitmap_rows = []
+            elif line == "ENDCHAR":
+                if encoding is not None and bbx is not None and encoding >= 0:
+                    glyphs[encoding] = {
+                        "dwidth": dwidth,
+                        "w": bbx[0],
+                        "h": bbx[1],
+                        "xoff": bbx[2],
+                        "yoff": bbx[3],
+                        "rows": bitmap_rows[:],
+                    }
+                encoding = None
+                bbx = None
+                in_bitmap = False
+                bitmap_rows = []
+            elif in_bitmap:
+                bitmap_rows.append(int(line, 16))
+
+    return glyphs
+
+
+def text_pixel_positions(glyphs, text, origin_x, baseline_y, fallback_width):
+    pixels = set()
+    cursor_x = origin_x
+
+    for char in text:
+        glyph = glyphs.get(ord(char))
+        if glyph is None:
+            cursor_x += fallback_width
+            continue
+
+        total_bits = ((glyph["w"] + 7) // 8) * 8
+        for row_index, row_value in enumerate(glyph["rows"]):
+            pixel_y = baseline_y - glyph["yoff"] - glyph["h"] + 1 + row_index
+            for bit_index in range(glyph["w"]):
+                if row_value & (1 << (total_bits - 1 - bit_index)):
+                    pixel_x = cursor_x + glyph["xoff"] + bit_index
+                    if 0 <= pixel_x < WIDTH and 0 <= pixel_y < HEIGHT:
+                        pixels.add((pixel_x, pixel_y))
+
+        cursor_x += glyph["dwidth"]
+
+    return pixels
 
 
 def draw_counter_display(matrix, canvas, font, big_font, counter):
@@ -50,10 +114,19 @@ def fountain(matrix, canvas, font, big_font, old_count, new_count):
     label = "LOAD COUNT"
     label_width = text_width(font, label)
 
+    old_text = str(old_count)
     new_text = str(new_count)
+    old_width = text_width(big_font, old_text)
     new_width = text_width(big_font, new_text)
+    old_x = (WIDTH - old_width) // 2
     new_x = (WIDTH - new_width) // 2
     new_y = 30
+    fallback_width = big_font.CharacterWidth(ord("0"))
+
+    old_pixels = text_pixel_positions(BDF_GLYPHS, old_text, old_x, new_y, fallback_width)
+    new_pixels = text_pixel_positions(BDF_GLYPHS, new_text, new_x, new_y, fallback_width)
+    written_pixels = set()
+    swept_pixels = set()
 
     y_positions = list(range(6, HEIGHT - 2))
     random.shuffle(y_positions)
@@ -75,7 +148,13 @@ def fountain(matrix, canvas, font, big_font, old_count, new_count):
     for frame in range(total_frames):
         canvas.Clear()
         graphics.DrawText(canvas, font, (WIDTH - label_width) // 2, 8, graphics.Color(180, 180, 255), label)
-        graphics.DrawText(canvas, big_font, new_x, new_y, graphics.Color(255, 255, 0), new_text)
+
+        for px, py in old_pixels:
+            if (px, py) not in swept_pixels:
+                canvas.SetPixel(px, py, 255, 255, 0)
+        for px, py in new_pixels:
+            if (px, py) in written_pixels:
+                canvas.SetPixel(px, py, 255, 255, 0)
 
         for sp in swimmers:
             if frame < sp["launch"]:
@@ -85,6 +164,15 @@ def fountain(matrix, canvas, font, big_font, old_count, new_count):
             hx = sp["hx"]
             hy = sp["hy"]
             phase = sp["phase"] + (frame - sp["launch"]) * 0.4
+            col_start = max(0, int(hx - sp["vx"]))
+            col_end = min(WIDTH - 1, int(hx))
+
+            for col in range(col_start, col_end + 1):
+                for dy in range(-2, 3):
+                    swept_pixels.add((col, int(hy) + dy))
+                for py in range(max(0, int(hy) - 2), min(HEIGHT, int(hy) + 3)):
+                    if (col, py) in new_pixels:
+                        written_pixels.add((col, py))
 
             for dx, dy in [(0, 0), (1, 0), (-1, 0), (0, -1), (0, 1)]:
                 hpx = int(round(hx)) + dx
@@ -123,6 +211,7 @@ font = graphics.Font()
 font.LoadFont(os.path.join(BASE_DIR, "fonts/6x12.bdf"))
 big_font = graphics.Font()
 big_font.LoadFont(os.path.join(BASE_DIR, "fonts/9x18.bdf"))
+BDF_GLYPHS = load_bdf_glyphs(os.path.join(BASE_DIR, "fonts/9x18.bdf"))
 matrix = RGBMatrix(options=options)
 offscreen_canvas = matrix.CreateFrameCanvas()
 
