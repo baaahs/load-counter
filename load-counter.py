@@ -23,11 +23,94 @@ LEGACY_COUNTER_STATE_PATH = os.path.join(BASE_DIR, "counter-state.txt")
 
 FOUNTAIN_STAGGER = 3
 FOUNTAIN_FRAME_DELAY = 0.029
+BOOT_HOLD_SECONDS = 2.2
 BDF_GLYPHS = {}
 
 
 def text_width(font, text):
     return sum(font.CharacterWidth(ord(char)) for char in text)
+
+
+def fill_ellipse(canvas, cx, cy, rx, ry, color):
+    if rx <= 0 or ry <= 0:
+        return
+
+    rr_x = rx * rx
+    rr_y = ry * ry
+    rxy = rr_x * rr_y
+    for y in range(max(0, cy - ry), min(HEIGHT, cy + ry + 1)):
+        dy = y - cy
+        dy_term = dy * dy * rr_x
+        for x in range(max(0, cx - rx), min(WIDTH, cx + rx + 1)):
+            dx = x - cx
+            if dx * dx * rr_y + dy_term <= rxy:
+                canvas.SetPixel(x, y, *color)
+
+
+def fill_circle(canvas, cx, cy, radius, color):
+    fill_ellipse(canvas, cx, cy, radius, radius, color)
+
+
+def fill_triangle(canvas, p1, p2, p3, color):
+    points = sorted([p1, p2, p3], key=lambda point: point[1])
+    min_y = max(0, points[0][1])
+    max_y = min(HEIGHT - 1, points[2][1])
+
+    def edge_intersection(a, b, y):
+        if a[1] == b[1]:
+            return [a[0], b[0]]
+        if y < min(a[1], b[1]) or y > max(a[1], b[1]):
+            return []
+        t = (y - a[1]) / (b[1] - a[1])
+        return [a[0] + t * (b[0] - a[0])]
+
+    for y in range(min_y, max_y + 1):
+        xs = []
+        xs.extend(edge_intersection(points[0], points[1], y))
+        xs.extend(edge_intersection(points[1], points[2], y))
+        xs.extend(edge_intersection(points[0], points[2], y))
+        if len(xs) < 2:
+            continue
+        x1 = max(0, math.floor(min(xs)))
+        x2 = min(WIDTH - 1, math.ceil(max(xs)))
+        for x in range(x1, x2 + 1):
+            canvas.SetPixel(x, y, *color)
+
+
+def fill_face(canvas, cx, top_y, height, top_width, bottom_width, color):
+    if height <= 0:
+        return
+
+    for row in range(height):
+        t = row / max(1, height - 1)
+        width = round(top_width + (bottom_width - top_width) * t)
+        y = top_y + row
+        if 0 <= y < HEIGHT:
+            start_x = max(0, cx - width // 2)
+            end_x = min(WIDTH - 1, cx + width // 2)
+            for x in range(start_x, end_x + 1):
+                canvas.SetPixel(x, y, *color)
+
+
+def boot_screen(matrix, canvas, font, big_font):
+    canvas.Clear()
+    for y in range(HEIGHT):
+        for x in range(WIDTH):
+            canvas.SetPixel(x, y, 0, 0, 0)
+
+    text = "baaahs"
+    shadow_color = graphics.Color(70, 70, 70)
+    text_color = graphics.Color(255, 255, 255)
+    text_width_px = text_width(big_font, text)
+    text_x = (WIDTH - text_width_px) // 2
+    baseline_y = 23
+
+    graphics.DrawText(canvas, big_font, text_x + 1, baseline_y + 1, shadow_color, text)
+    graphics.DrawText(canvas, big_font, text_x, baseline_y, text_color, text)
+
+    canvas = matrix.SwapOnVSync(canvas)
+    time.sleep(BOOT_HOLD_SECONDS)
+    return canvas
 
 
 def load_counter(path, legacy_path=None):
@@ -271,6 +354,7 @@ if counter == 0:
 ensure_counter_state_file(COUNTER_STATE_PATH, counter)
 print(f"Loaded counter={counter} from {COUNTER_STATE_PATH}", flush=True)
 sensor1_triggered_at = None
+offscreen_canvas = boot_screen(matrix, offscreen_canvas, font, big_font)
 offscreen_canvas = draw_counter_display(matrix, offscreen_canvas, font, big_font, counter)
 
 while True:
