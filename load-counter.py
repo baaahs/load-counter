@@ -27,6 +27,7 @@ BOOT_HOLD_SECONDS = 7.0
 BOOT_BACKGROUND = (0, 0, 0)
 BOOT_FADE_STEPS = 8
 BOOT_FADE_FRAME_DELAY = 0.05
+DEBUG_MODE = False
 BDF_GLYPHS = {}
 BOOT_TONE_MAP = {
     " ": (0, 0, 0),
@@ -139,6 +140,20 @@ def fill_face(canvas, cx, top_y, height, top_width, bottom_width, color):
 
 def scale_color(color, factor):
     return tuple(int(channel * factor) for channel in color)
+
+
+def draw_debug_overlay(canvas, debug_font, distance1, distance2):
+    if not DEBUG_MODE or distance1 is None or distance2 is None:
+        return
+
+    baseline_y = HEIGHT - 2
+    left_text = f"L:{distance1:.0f}"
+    right_text = f"R:{distance2:.0f}"
+    debug_color = graphics.Color(96, 255, 96)
+    right_x = WIDTH - text_width(debug_font, right_text)
+
+    graphics.DrawText(canvas, debug_font, 0, baseline_y, debug_color, left_text)
+    graphics.DrawText(canvas, debug_font, right_x, baseline_y, debug_color, right_text)
 
 
 def render_boot_screen(canvas, brightness=1.0):
@@ -272,13 +287,23 @@ def text_pixel_positions(glyphs, text, origin_x, baseline_y, fallback_width):
     return pixels
 
 
-def draw_counter_display(matrix, canvas, font, big_font, counter):
+def draw_counter_display(matrix, canvas, font, big_font, debug_font, counter, distance1=None, distance2=None):
     canvas.Clear()
-    render_counter_display(canvas, font, big_font, counter)
+    render_counter_display(canvas, font, big_font, debug_font, counter, distance1=distance1, distance2=distance2)
     return matrix.SwapOnVSync(canvas)
 
 
-def render_counter_display(canvas, font, big_font, counter, label_brightness=1.0, count_brightness=1.0):
+def render_counter_display(
+    canvas,
+    font,
+    big_font,
+    debug_font,
+    counter,
+    label_brightness=1.0,
+    count_brightness=1.0,
+    distance1=None,
+    distance2=None,
+):
     label = "LOAD COUNT"
     label_color = graphics.Color(*scale_color((180, 180, 255), label_brightness))
     count_color = graphics.Color(*scale_color((255, 255, 0), count_brightness))
@@ -290,9 +315,10 @@ def render_counter_display(canvas, font, big_font, counter, label_brightness=1.0
     count_width = text_width(big_font, num)
     num_y = count_baseline(big_font)
     graphics.DrawText(canvas, big_font, (WIDTH - count_width) // 2, num_y, count_color, num)
+    draw_debug_overlay(canvas, debug_font, distance1, distance2)
 
 
-def fade_boot_to_counter(matrix, canvas, font, big_font, counter):
+def fade_boot_to_counter(matrix, canvas, font, big_font, debug_font, counter, distance1=None, distance2=None):
     for step in range(BOOT_FADE_STEPS, -1, -1):
         canvas.Clear()
         render_boot_screen(canvas, step / BOOT_FADE_STEPS)
@@ -305,9 +331,12 @@ def fade_boot_to_counter(matrix, canvas, font, big_font, counter):
             canvas,
             font,
             big_font,
+            debug_font,
             counter,
             label_brightness=step / BOOT_FADE_STEPS,
             count_brightness=step / BOOT_FADE_STEPS,
+            distance1=distance1,
+            distance2=distance2,
         )
         canvas = matrix.SwapOnVSync(canvas)
         time.sleep(BOOT_FADE_FRAME_DELAY)
@@ -315,7 +344,7 @@ def fade_boot_to_counter(matrix, canvas, font, big_font, counter):
     return canvas
 
 
-def fountain(matrix, canvas, font, big_font, old_count, new_count):
+def fountain(matrix, canvas, font, big_font, debug_font, old_count, new_count, distance1=None, distance2=None):
     label = "LOAD COUNT"
     label_width = text_width(font, label)
 
@@ -393,10 +422,20 @@ def fountain(matrix, canvas, font, big_font, old_count, new_count):
                     fade = (tail_len - i + 1) / tail_len
                     canvas.SetPixel(tx, ty, int(220 * fade), int(220 * fade), int(140 * fade))
 
+        draw_debug_overlay(canvas, debug_font, distance1, distance2)
         canvas = matrix.SwapOnVSync(canvas)
         time.sleep(FOUNTAIN_FRAME_DELAY)
 
-    return draw_counter_display(matrix, canvas, font, big_font, new_count)
+    return draw_counter_display(
+        matrix,
+        canvas,
+        font,
+        big_font,
+        debug_font,
+        new_count,
+        distance1=distance1,
+        distance2=distance2,
+    )
 
 
 uart1 = serial.Serial("/dev/ttyUSB0", baudrate=9600, timeout=1)
@@ -416,6 +455,8 @@ font = graphics.Font()
 font.LoadFont(os.path.join(BASE_DIR, "fonts/6x12.bdf"))
 big_font = graphics.Font()
 big_font.LoadFont(os.path.join(BASE_DIR, "fonts/10x20.bdf"))
+debug_font = graphics.Font()
+debug_font.LoadFont(os.path.join(BASE_DIR, "fonts/4x6.bdf"))
 BDF_GLYPHS = load_bdf_glyphs(os.path.join(BASE_DIR, "fonts/10x20.bdf"))
 matrix = RGBMatrix(options=options)
 offscreen_canvas = matrix.CreateFrameCanvas()
@@ -426,9 +467,11 @@ if counter == 0:
 ensure_counter_state_file(COUNTER_STATE_PATH, counter)
 print(f"Loaded counter={counter} from {COUNTER_STATE_PATH}", flush=True)
 sensor1_triggered_at = None
+distance1 = None
+distance2 = None
 offscreen_canvas = boot_screen(matrix, offscreen_canvas, font, big_font)
-offscreen_canvas = fade_boot_to_counter(matrix, offscreen_canvas, font, big_font, counter)
-offscreen_canvas = draw_counter_display(matrix, offscreen_canvas, font, big_font, counter)
+offscreen_canvas = fade_boot_to_counter(matrix, offscreen_canvas, font, big_font, debug_font, counter)
+offscreen_canvas = draw_counter_display(matrix, offscreen_canvas, font, big_font, debug_font, counter)
 
 while True:
     distance1 = us100_1.distance
@@ -449,7 +492,26 @@ while True:
             save_counter(COUNTER_STATE_PATH, counter)
             print(f"Count! #{counter} (sensor1->sensor2)", flush=True)
             sensor1_triggered_at = None
-            offscreen_canvas = fountain(matrix, offscreen_canvas, font, big_font, old_count, counter)
+            offscreen_canvas = fountain(
+                matrix,
+                offscreen_canvas,
+                font,
+                big_font,
+                debug_font,
+                old_count,
+                counter,
+                distance1=distance1,
+                distance2=distance2,
+            )
 
     print(f"d1={distance1:.0f}cm d2={distance2:.0f}cm count={counter}", flush=True)
-    offscreen_canvas = draw_counter_display(matrix, offscreen_canvas, font, big_font, counter)
+    offscreen_canvas = draw_counter_display(
+        matrix,
+        offscreen_canvas,
+        font,
+        big_font,
+        debug_font,
+        counter,
+        distance1=distance1,
+        distance2=distance2,
+    )
