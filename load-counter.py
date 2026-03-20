@@ -17,6 +17,7 @@ THRESHOLD = 40  # cm
 TIMEOUT = 20  # seconds
 WIDTH = 64
 HEIGHT = 32
+COUNT_TOP = 11
 
 FOUNTAIN_STAGGER = 3
 FOUNTAIN_FRAME_DELAY = 0.022
@@ -25,6 +26,10 @@ BDF_GLYPHS = {}
 
 def text_width(font, text):
     return sum(font.CharacterWidth(ord(char)) for char in text)
+
+
+def count_baseline(big_font):
+    return COUNT_TOP + big_font.baseline
 
 
 def load_bdf_glyphs(path):
@@ -104,7 +109,7 @@ def draw_counter_display(matrix, canvas, font, big_font, counter):
 
     num = str(counter)
     count_width = text_width(big_font, num)
-    num_y = 30
+    num_y = count_baseline(big_font)
     graphics.DrawText(canvas, big_font, (WIDTH - count_width) // 2, num_y, count_color, num)
 
     return matrix.SwapOnVSync(canvas)
@@ -120,7 +125,7 @@ def fountain(matrix, canvas, font, big_font, old_count, new_count):
     new_width = text_width(big_font, new_text)
     old_x = (WIDTH - old_width) // 2
     new_x = (WIDTH - new_width) // 2
-    new_y = 30
+    new_y = count_baseline(big_font)
     fallback_width = big_font.CharacterWidth(ord("0"))
 
     old_pixels = text_pixel_positions(BDF_GLYPHS, old_text, old_x, new_y, fallback_width)
@@ -210,8 +215,8 @@ options.hardware_mapping = "adafruit-hat"
 font = graphics.Font()
 font.LoadFont(os.path.join(BASE_DIR, "fonts/6x12.bdf"))
 big_font = graphics.Font()
-big_font.LoadFont(os.path.join(BASE_DIR, "fonts/9x18.bdf"))
-BDF_GLYPHS = load_bdf_glyphs(os.path.join(BASE_DIR, "fonts/9x18.bdf"))
+big_font.LoadFont(os.path.join(BASE_DIR, "fonts/10x20.bdf"))
+BDF_GLYPHS = load_bdf_glyphs(os.path.join(BASE_DIR, "fonts/10x20.bdf"))
 matrix = RGBMatrix(options=options)
 offscreen_canvas = matrix.CreateFrameCanvas()
 
