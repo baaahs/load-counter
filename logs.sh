@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PI="jul@192.168.1.218"
-SERVICE="loadcounter"
+PI="jul@raspberry.local"
+SERVICES="loadcounter loadcounter-keyboard"
 
 usage() {
     echo "Usage: ./logs.sh [command]"
@@ -25,21 +25,21 @@ case "$CMD" in
         ;;
     live)
         echo "==> Following live logs (Ctrl+C to stop)..."
-        ssh "$PI" "sudo journalctl -u $SERVICE -f --no-pager"
+        ssh "$PI" "sudo journalctl -u loadcounter -u loadcounter-keyboard -f --no-pager"
         ;;
     last)
         N="${2:-100}"
-        ssh "$PI" "sudo journalctl -u $SERVICE -n $N --no-pager"
+        ssh "$PI" "sudo journalctl -u loadcounter -u loadcounter-keyboard -n $N --no-pager"
         ;;
     prev)
         echo "==> Logs from previous boot..."
-        ssh "$PI" "sudo journalctl -u $SERVICE -b -1 --no-pager"
+        ssh "$PI" "sudo journalctl -u loadcounter -u loadcounter-keyboard -b -1 --no-pager"
         ;;
     today)
-        ssh "$PI" "sudo journalctl -u $SERVICE --since today --no-pager"
+        ssh "$PI" "sudo journalctl -u loadcounter -u loadcounter-keyboard --since today --no-pager"
         ;;
     status)
-        ssh "$PI" "sudo systemctl status $SERVICE --no-pager -l"
+        ssh "$PI" "sudo systemctl status $SERVICES --no-pager -l"
         ;;
     *)
         echo "Unknown command: $CMD"

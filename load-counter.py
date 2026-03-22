@@ -1,3 +1,4 @@
+import json
 import math
 import os
 import random
@@ -10,24 +11,32 @@ import serial
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-THRESHOLD = 40  # cm
-TIMEOUT = 20  # seconds
+DEFAULT_THRESHOLD = 40  # cm
+DEFAULT_TIMEOUT = 20  # seconds
 WIDTH = 64
 HEIGHT = 32
 COUNT_TOP = 11
 FOUNTAIN_Y_OFFSET = -1
 COUNTER_STATE_DIR = "/var/lib/loadcounter"
 COUNTER_STATE_PATH = os.path.join(COUNTER_STATE_DIR, "counter-state.txt")
+SETTINGS_STATE_PATH = os.path.join(COUNTER_STATE_DIR, "settings.json")
+COMMAND_STATE_DIR = "/var/tmp/loadcounter"
+KEYBOARD_COMMAND_PATH = os.path.join(COMMAND_STATE_DIR, "keyboard-command.json")
 PRIOR_COUNTER_STATE_PATH = "/var/tmp/loadcounter/counter-state.txt"
 LEGACY_COUNTER_STATE_PATH = os.path.join(BASE_DIR, "counter-state.txt")
 
 FOUNTAIN_STAGGER = 3
 FOUNTAIN_FRAME_DELAY = 0.029
-BOOT_HOLD_SECONDS = 7.0
+BOOT_HOLD_SECONDS = 1.0
 BOOT_BACKGROUND = (0, 0, 0)
 BOOT_FADE_STEPS = 8
 BOOT_FADE_FRAME_DELAY = 0.05
-DEBUG_MODE = False
+DEFAULT_DEBUG_MODE = False
+STATUS_MESSAGE_SECONDS = 2.0
+MIN_THRESHOLD = 5
+MAX_THRESHOLD = 300
+MIN_TIMEOUT = 1
+MAX_TIMEOUT = 120
 BDF_GLYPHS = {}
 BOOT_TONE_MAP = {
     " ": (0, 0, 0),
@@ -142,8 +151,100 @@ def scale_color(color, factor):
     return tuple(int(channel * factor) for channel in color)
 
 
-def draw_debug_overlay(canvas, debug_font, distance1, distance2):
-    if not DEBUG_MODE or distance1 is None or distance2 is None:
+def clamp(value, minimum, maximum):
+    return max(minimum, min(maximum, value))
+
+
+def default_settings():
+    return {
+        "threshold_cm": DEFAULT_THRESHOLD,
+        "timeout_s": DEFAULT_TIMEOUT,
+        "debug_mode": DEFAULT_DEBUG_MODE,
+    }
+
+
+def sanitize_settings(raw_settings):
+    settings = default_settings()
+    if not isinstance(raw_settings, dict):
+        return settings
+
+    try:
+        settings["threshold_cm"] = clamp(int(raw_settings.get("threshold_cm", DEFAULT_THRESHOLD)), MIN_THRESHOLD, MAX_THRESHOLD)
+    except (TypeError, ValueError):
+        pass
+
+    try:
+        settings["timeout_s"] = clamp(int(raw_settings.get("timeout_s", DEFAULT_TIMEOUT)), MIN_TIMEOUT, MAX_TIMEOUT)
+    except (TypeError, ValueError):
+        pass
+
+    settings["debug_mode"] = bool(raw_settings.get("debug_mode", DEFAULT_DEBUG_MODE))
+    return settings
+
+
+def load_settings(path):
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return sanitize_settings(json.load(handle))
+    except FileNotFoundError:
+        return default_settings()
+    except (OSError, ValueError, TypeError) as exc:
+        print(f"Failed to load settings from {path}: {exc}", flush=True)
+        return default_settings()
+
+
+def save_settings(path, settings):
+    temp_path = f"{path}.tmp"
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(temp_path, "w", encoding="utf-8") as handle:
+            json.dump(sanitize_settings(settings), handle, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+    except OSError as exc:
+        print(f"Failed to save settings to {path}: {exc}", flush=True)
+
+
+def load_keyboard_command(path, last_command_id):
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except FileNotFoundError:
+        return None, last_command_id
+    except (OSError, ValueError, TypeError) as exc:
+        print(f"Failed to load keyboard command from {path}: {exc}", flush=True)
+        return None, last_command_id
+
+    if not isinstance(payload, dict):
+        return None, last_command_id
+
+    command_id = str(payload.get("id", ""))
+    command = payload.get("command")
+    if not command_id or command_id == last_command_id or not isinstance(command, str):
+        return None, last_command_id
+
+    return command, command_id
+
+
+def set_status_message(message):
+    return message, time.time() + STATUS_MESSAGE_SECONDS
+
+
+def draw_status_overlay(canvas, debug_font, message):
+    if not message:
+        return
+
+    baseline_y = HEIGHT - 8
+    status_color = graphics.Color(255, 180, 80)
+    status_width = text_width(debug_font, message)
+    status_x = max(0, (WIDTH - status_width) // 2)
+    graphics.DrawText(canvas, debug_font, status_x, baseline_y, status_color, message)
+
+
+def draw_debug_overlay(canvas, debug_font, distance1, distance2, debug_mode):
+    if not debug_mode or distance1 is None or distance2 is None:
         return
 
     baseline_y = HEIGHT - 2
@@ -154,6 +255,14 @@ def draw_debug_overlay(canvas, debug_font, distance1, distance2):
 
     graphics.DrawText(canvas, debug_font, 0, baseline_y, debug_color, left_text)
     graphics.DrawText(canvas, debug_font, right_x, baseline_y, debug_color, right_text)
+
+
+def draw_footer_overlay(canvas, debug_font, distance1, distance2, debug_mode, status_message):
+    if status_message:
+        draw_status_overlay(canvas, debug_font, status_message)
+        return
+
+    draw_debug_overlay(canvas, debug_font, distance1, distance2, debug_mode)
 
 
 def render_boot_screen(canvas, brightness=1.0):
@@ -287,9 +396,30 @@ def text_pixel_positions(glyphs, text, origin_x, baseline_y, fallback_width):
     return pixels
 
 
-def draw_counter_display(matrix, canvas, font, big_font, debug_font, counter, distance1=None, distance2=None):
+def draw_counter_display(
+    matrix,
+    canvas,
+    font,
+    big_font,
+    debug_font,
+    counter,
+    distance1=None,
+    distance2=None,
+    debug_mode=False,
+    status_message=None,
+):
     canvas.Clear()
-    render_counter_display(canvas, font, big_font, debug_font, counter, distance1=distance1, distance2=distance2)
+    render_counter_display(
+        canvas,
+        font,
+        big_font,
+        debug_font,
+        counter,
+        distance1=distance1,
+        distance2=distance2,
+        debug_mode=debug_mode,
+        status_message=status_message,
+    )
     return matrix.SwapOnVSync(canvas)
 
 
@@ -303,6 +433,8 @@ def render_counter_display(
     count_brightness=1.0,
     distance1=None,
     distance2=None,
+    debug_mode=False,
+    status_message=None,
 ):
     label = "LOAD COUNT"
     label_color = graphics.Color(*scale_color((180, 180, 255), label_brightness))
@@ -315,10 +447,21 @@ def render_counter_display(
     count_width = text_width(big_font, num)
     num_y = count_baseline(big_font)
     graphics.DrawText(canvas, big_font, (WIDTH - count_width) // 2, num_y, count_color, num)
-    draw_debug_overlay(canvas, debug_font, distance1, distance2)
+    draw_footer_overlay(canvas, debug_font, distance1, distance2, debug_mode, status_message)
 
 
-def fade_boot_to_counter(matrix, canvas, font, big_font, debug_font, counter, distance1=None, distance2=None):
+def fade_boot_to_counter(
+    matrix,
+    canvas,
+    font,
+    big_font,
+    debug_font,
+    counter,
+    distance1=None,
+    distance2=None,
+    debug_mode=False,
+    status_message=None,
+):
     for step in range(BOOT_FADE_STEPS, -1, -1):
         canvas.Clear()
         render_boot_screen(canvas, step / BOOT_FADE_STEPS)
@@ -337,6 +480,8 @@ def fade_boot_to_counter(matrix, canvas, font, big_font, debug_font, counter, di
             count_brightness=step / BOOT_FADE_STEPS,
             distance1=distance1,
             distance2=distance2,
+            debug_mode=debug_mode,
+            status_message=status_message,
         )
         canvas = matrix.SwapOnVSync(canvas)
         time.sleep(BOOT_FADE_FRAME_DELAY)
@@ -344,7 +489,19 @@ def fade_boot_to_counter(matrix, canvas, font, big_font, debug_font, counter, di
     return canvas
 
 
-def fountain(matrix, canvas, font, big_font, debug_font, old_count, new_count, distance1=None, distance2=None):
+def fountain(
+    matrix,
+    canvas,
+    font,
+    big_font,
+    debug_font,
+    old_count,
+    new_count,
+    distance1=None,
+    distance2=None,
+    debug_mode=False,
+    status_message=None,
+):
     label = "LOAD COUNT"
     label_width = text_width(font, label)
 
@@ -422,7 +579,7 @@ def fountain(matrix, canvas, font, big_font, debug_font, old_count, new_count, d
                     fade = (tail_len - i + 1) / tail_len
                     canvas.SetPixel(tx, ty, int(220 * fade), int(220 * fade), int(140 * fade))
 
-        draw_debug_overlay(canvas, debug_font, distance1, distance2)
+        draw_footer_overlay(canvas, debug_font, distance1, distance2, debug_mode, status_message)
         canvas = matrix.SwapOnVSync(canvas)
         time.sleep(FOUNTAIN_FRAME_DELAY)
 
@@ -435,7 +592,43 @@ def fountain(matrix, canvas, font, big_font, debug_font, old_count, new_count, d
         new_count,
         distance1=distance1,
         distance2=distance2,
+        debug_mode=debug_mode,
+        status_message=status_message,
     )
+
+
+def apply_command(command, settings, counter):
+    updated_counter = counter
+    settings_changed = False
+    counter_changed = False
+    status_message = None
+
+    if command == "threshold_up":
+        settings["threshold_cm"] = clamp(settings["threshold_cm"] + 1, MIN_THRESHOLD, MAX_THRESHOLD)
+        settings_changed = True
+        status_message = f"THR {settings['threshold_cm']}"
+    elif command == "threshold_down":
+        settings["threshold_cm"] = clamp(settings["threshold_cm"] - 1, MIN_THRESHOLD, MAX_THRESHOLD)
+        settings_changed = True
+        status_message = f"THR {settings['threshold_cm']}"
+    elif command == "timeout_up":
+        settings["timeout_s"] = clamp(settings["timeout_s"] + 1, MIN_TIMEOUT, MAX_TIMEOUT)
+        settings_changed = True
+        status_message = f"TIME {settings['timeout_s']}"
+    elif command == "timeout_down":
+        settings["timeout_s"] = clamp(settings["timeout_s"] - 1, MIN_TIMEOUT, MAX_TIMEOUT)
+        settings_changed = True
+        status_message = f"TIME {settings['timeout_s']}"
+    elif command == "debug_toggle":
+        settings["debug_mode"] = not settings["debug_mode"]
+        settings_changed = True
+        status_message = None
+    elif command == "count_reset":
+        updated_counter = 0
+        counter_changed = True
+        status_message = "COUNT RESET"
+
+    return updated_counter, settings_changed, counter_changed, status_message
 
 
 uart1 = serial.Serial("/dev/ttyUSB0", baudrate=9600, timeout=1)
@@ -465,28 +658,71 @@ counter = load_counter(COUNTER_STATE_PATH, PRIOR_COUNTER_STATE_PATH)
 if counter == 0:
     counter = load_counter(COUNTER_STATE_PATH, LEGACY_COUNTER_STATE_PATH)
 ensure_counter_state_file(COUNTER_STATE_PATH, counter)
+settings = load_settings(SETTINGS_STATE_PATH)
+save_settings(SETTINGS_STATE_PATH, settings)
 print(f"Loaded counter={counter} from {COUNTER_STATE_PATH}", flush=True)
+print(f"Loaded settings={settings} from {SETTINGS_STATE_PATH}", flush=True)
 sensor1_triggered_at = None
 distance1 = None
 distance2 = None
+last_command_id = None
+status_message = None
+status_expires_at = 0.0
 offscreen_canvas = boot_screen(matrix, offscreen_canvas, font, big_font)
-offscreen_canvas = fade_boot_to_counter(matrix, offscreen_canvas, font, big_font, debug_font, counter)
-offscreen_canvas = draw_counter_display(matrix, offscreen_canvas, font, big_font, debug_font, counter)
+offscreen_canvas = fade_boot_to_counter(
+    matrix,
+    offscreen_canvas,
+    font,
+    big_font,
+    debug_font,
+    counter,
+    debug_mode=settings["debug_mode"],
+)
+offscreen_canvas = draw_counter_display(
+    matrix,
+    offscreen_canvas,
+    font,
+    big_font,
+    debug_font,
+    counter,
+    debug_mode=settings["debug_mode"],
+)
 
 while True:
+    now = time.time()
+    if status_message and now >= status_expires_at:
+        status_message = None
+
+    command, last_command_id = load_keyboard_command(KEYBOARD_COMMAND_PATH, last_command_id)
+    if command is not None:
+        updated_counter, settings_changed, counter_changed, key_status = apply_command(command, settings, counter)
+
+        if key_status:
+            status_message, status_expires_at = set_status_message(key_status)
+
+        if settings_changed:
+            save_settings(SETTINGS_STATE_PATH, settings)
+            print(f"Updated settings={settings}", flush=True)
+
+        if counter_changed:
+            counter = updated_counter
+            save_counter(COUNTER_STATE_PATH, counter)
+            sensor1_triggered_at = None
+            print("Counter reset from keyboard", flush=True)
+
     distance1 = us100_1.distance
     distance2 = us100_2.distance
 
-    if distance1 < THRESHOLD:
+    if distance1 < settings["threshold_cm"]:
         if sensor1_triggered_at is None:
             sensor1_triggered_at = time.time()
             print(f"Sensor 1 triggered: {distance1} cm", flush=True)
 
     if sensor1_triggered_at is not None:
-        if time.time() - sensor1_triggered_at > TIMEOUT:
-            print(f"Timeout - sensor 2 did not trigger within {TIMEOUT}s", flush=True)
+        if time.time() - sensor1_triggered_at > settings["timeout_s"]:
+            print(f"Timeout - sensor 2 did not trigger within {settings['timeout_s']}s", flush=True)
             sensor1_triggered_at = None
-        elif distance2 < THRESHOLD:
+        elif distance2 < settings["threshold_cm"]:
             old_count = counter
             counter += 1
             save_counter(COUNTER_STATE_PATH, counter)
@@ -502,6 +738,8 @@ while True:
                 counter,
                 distance1=distance1,
                 distance2=distance2,
+                debug_mode=settings["debug_mode"],
+                status_message=status_message,
             )
 
     print(f"d1={distance1:.0f}cm d2={distance2:.0f}cm count={counter}", flush=True)
@@ -514,4 +752,6 @@ while True:
         counter,
         distance1=distance1,
         distance2=distance2,
+        debug_mode=settings["debug_mode"],
+        status_message=status_message,
     )

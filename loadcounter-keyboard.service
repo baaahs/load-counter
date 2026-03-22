@@ -1,0 +1,18 @@
+[Unit]
+Description=Load Counter Keyboard Listener
+After=bluetooth.target
+
+[Service]
+Type=simple
+User=jul
+SupplementaryGroups=input
+WorkingDirectory=/home/jul/loadcounter
+ExecStart=/home/jul/loadcounter/env/bin/python /home/jul/loadcounter/keyboard-listener.py
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=loadcounter-keyboard
+
+[Install]
+WantedBy=multi-user.target
