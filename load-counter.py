@@ -253,6 +253,15 @@ def load_keyboard_command(path, last_command_id):
     return command, command_id
 
 
+def clear_keyboard_command(path):
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        print(f"Failed to clear keyboard command file {path}: {exc}", flush=True)
+
+
 def set_status_message(message):
     return message, time.time() + STATUS_MESSAGE_SECONDS
 
@@ -812,7 +821,10 @@ if counter == 0:
     counter = load_counter(COUNTER_STATE_PATH, LEGACY_COUNTER_STATE_PATH)
 ensure_counter_state_file(COUNTER_STATE_PATH, counter)
 settings = load_settings(SETTINGS_STATE_PATH)
+if settings["debug_mode"]:
+    settings["debug_mode"] = False
 save_settings(SETTINGS_STATE_PATH, settings)
+clear_keyboard_command(KEYBOARD_COMMAND_PATH)
 print(f"Loaded counter={counter} from {COUNTER_STATE_PATH}", flush=True)
 print(f"Loaded settings={settings} from {SETTINGS_STATE_PATH}", flush=True)
 sensor1_triggered_at = None
