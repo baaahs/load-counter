@@ -12,7 +12,7 @@ import serial
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 DEFAULT_THRESHOLD = 40  # cm
-DEFAULT_TIMEOUT = 20  # seconds
+DEFAULT_TIMEOUT_MS = 20_000
 WIDTH = 64
 HEIGHT = 32
 COUNT_TOP = 11
@@ -33,6 +33,7 @@ BOOT_FADE_STEPS = 8
 BOOT_FADE_FRAME_DELAY = 0.05
 DEFAULT_DEBUG_MODE = False
 STATUS_MESSAGE_SECONDS = 2.0
+COUNT_TRIGGER_FLASH_SECONDS = 1.0
 MIN_THRESHOLD = 5
 MAX_THRESHOLD = 300
 MIN_TIMEOUT = 1
@@ -79,6 +80,15 @@ BOOT_LOGO_ROWS = [
     "              ::......::              ",
     "                :....:                ",
     "                  ..                  ",
+]
+
+MENU_ITEMS = [
+    {"id": "threshold_cm", "label": "THRESH", "type": "int", "step": 1, "minimum": MIN_THRESHOLD, "maximum": MAX_THRESHOLD},
+    {"id": "timeout_ms", "label": "TIME", "type": "int", "step": 100, "minimum": MIN_TIMEOUT * 1000, "maximum": MAX_TIMEOUT * 1000},
+    {"id": "debug_mode", "label": "DEBUG", "type": "bool"},
+    {"id": "calibrate", "label": "CAL", "type": "action"},
+    {"id": "reset_defaults", "label": "RESET", "type": "action"},
+    {"id": "save_exit", "label": "EXIT", "type": "action"},
 ]
 
 
@@ -158,8 +168,10 @@ def clamp(value, minimum, maximum):
 def default_settings():
     return {
         "threshold_cm": DEFAULT_THRESHOLD,
-        "timeout_s": DEFAULT_TIMEOUT,
+        "timeout_ms": DEFAULT_TIMEOUT_MS,
         "debug_mode": DEFAULT_DEBUG_MODE,
+        "base_distance_1_cm": None,
+        "base_distance_2_cm": None,
     }
 
 
@@ -174,11 +186,24 @@ def sanitize_settings(raw_settings):
         pass
 
     try:
-        settings["timeout_s"] = clamp(int(raw_settings.get("timeout_s", DEFAULT_TIMEOUT)), MIN_TIMEOUT, MAX_TIMEOUT)
+        if "timeout_ms" in raw_settings:
+            timeout_ms = int(raw_settings.get("timeout_ms", DEFAULT_TIMEOUT_MS))
+        else:
+            timeout_ms = int(raw_settings.get("timeout_s", DEFAULT_TIMEOUT_MS / 1000)) * 1000
+        settings["timeout_ms"] = clamp(timeout_ms, MIN_TIMEOUT * 1000, MAX_TIMEOUT * 1000)
     except (TypeError, ValueError):
         pass
 
     settings["debug_mode"] = bool(raw_settings.get("debug_mode", DEFAULT_DEBUG_MODE))
+    for key in ("base_distance_1_cm", "base_distance_2_cm"):
+        raw_value = raw_settings.get(key)
+        if raw_value is None:
+            settings[key] = None
+            continue
+        try:
+            settings[key] = max(1, int(raw_value))
+        except (TypeError, ValueError):
+            settings[key] = None
     return settings
 
 
@@ -247,7 +272,7 @@ def draw_debug_overlay(canvas, debug_font, distance1, distance2, debug_mode):
     if not debug_mode or distance1 is None or distance2 is None:
         return
 
-    baseline_y = HEIGHT - 2
+    baseline_y = HEIGHT
     left_text = f"L:{distance1:.0f}"
     right_text = f"R:{distance2:.0f}"
     debug_color = graphics.Color(96, 255, 96)
@@ -263,6 +288,126 @@ def draw_footer_overlay(canvas, debug_font, distance1, distance2, debug_mode, st
         return
 
     draw_debug_overlay(canvas, debug_font, distance1, distance2, debug_mode)
+
+
+def filtered_average(samples):
+    valid = sorted(sample for sample in samples if 2 <= sample <= 800)
+    if not valid:
+        return None
+
+    median = valid[len(valid) // 2]
+    tolerance = max(20, int(median * 0.2))
+    filtered = [sample for sample in valid if abs(sample - median) <= tolerance]
+    working = filtered or valid
+
+    trim = min(len(working) // 5, max(0, len(working) - 3))
+    if trim > 0:
+        working = working[trim:-trim]
+
+    return round(sum(working) / len(working))
+
+
+def calibrate_base_distances(us100_1, us100_2, duration_seconds=2.0):
+    samples_1 = []
+    samples_2 = []
+    deadline = time.time() + duration_seconds
+
+    while time.time() < deadline:
+        samples_1.append(us100_1.distance)
+        samples_2.append(us100_2.distance)
+        time.sleep(0.05)
+
+    return filtered_average(samples_1), filtered_average(samples_2)
+
+
+def render_calibrating_display(canvas, debug_font):
+    canvas.Clear()
+    color = graphics.Color(255, 180, 80)
+    message = "CALIBRATING"
+    text_x = max(0, (WIDTH - text_width(debug_font, message)) // 2)
+    graphics.DrawText(canvas, debug_font, text_x, 15, color, message)
+    graphics.DrawText(canvas, debug_font, 20, 23, color, "2s")
+
+
+def menu_value_text(item, draft_settings):
+    item_id = item["id"]
+    if item_id == "threshold_cm":
+        return f"{draft_settings['threshold_cm']}cm"
+    if item_id == "timeout_ms":
+        return f"{draft_settings['timeout_ms']}ms"
+    if item_id == "debug_mode":
+        return "ON" if draft_settings["debug_mode"] else "OFF"
+    if item_id == "calibrate":
+        return "2s"
+    if item_id == "reset_defaults":
+        return "DEF"
+    if item_id == "save_exit":
+        return "SAVE"
+    return ""
+
+
+def trigger_status_text(sensor1_triggered_at, last_counted_at, now):
+    if last_counted_at is not None and now - last_counted_at <= COUNT_TRIGGER_FLASH_SECONDS:
+        return "CNT"
+    if sensor1_triggered_at is not None:
+        return "ARM"
+    return "IDL"
+
+
+def render_menu_display(
+    canvas,
+    debug_font,
+    draft_settings,
+    selected_index,
+    edit_mode,
+    input_buffer,
+    distance1,
+    distance2,
+    sensor1_triggered_at,
+    last_counted_at,
+):
+    canvas.Clear()
+    normal_label = graphics.Color(120, 120, 180)
+    selected_label = graphics.Color(255, 220, 100)
+    normal_value = graphics.Color(220, 220, 220)
+    editing_value = graphics.Color(120, 255, 120)
+    action_value = graphics.Color(180, 220, 255)
+    visible_rows = 5
+    start_index = min(max(0, selected_index - visible_rows + 1), max(0, len(MENU_ITEMS) - visible_rows))
+
+    for row_index in range(visible_rows):
+        index = start_index + row_index
+        if index >= len(MENU_ITEMS):
+            break
+
+        item = MENU_ITEMS[index]
+        baseline_y = 5 + row_index * 5
+        marker = ">" if index == selected_index else " "
+        label_color = selected_label if index == selected_index else normal_label
+        value_color = normal_value
+        if item["type"] == "action":
+            value_color = action_value
+        if index == selected_index and edit_mode:
+            value_color = editing_value
+
+        label = f"{marker}{item['label']}"
+        value = menu_value_text(item, draft_settings)
+        if index == selected_index and edit_mode and item["type"] == "int" and input_buffer is not None:
+            value = f"{input_buffer}_"
+        value_x = WIDTH - text_width(debug_font, value)
+
+        graphics.DrawText(canvas, debug_font, 0, baseline_y, label_color, label)
+        graphics.DrawText(canvas, debug_font, value_x, baseline_y, value_color, value)
+
+    sensor_left = f"L{distance1:.0f}" if distance1 is not None else "L--"
+    sensor_right = f"R{distance2:.0f}" if distance2 is not None else "R--"
+    status_text = trigger_status_text(sensor1_triggered_at, last_counted_at, time.time())
+    bottom_color = graphics.Color(96, 255, 96)
+    status_color = graphics.Color(255, 180, 80) if status_text == "CNT" else graphics.Color(180, 180, 255)
+
+    graphics.DrawText(canvas, debug_font, 0, HEIGHT - 1, bottom_color, sensor_left)
+    graphics.DrawText(canvas, debug_font, 18, HEIGHT - 1, bottom_color, sensor_right)
+    graphics.DrawText(canvas, debug_font, WIDTH - text_width(debug_font, status_text), HEIGHT - 1, status_color, status_text)
 
 
 def render_boot_screen(canvas, brightness=1.0):
@@ -579,7 +724,6 @@ def fountain(
                     fade = (tail_len - i + 1) / tail_len
                     canvas.SetPixel(tx, ty, int(220 * fade), int(220 * fade), int(140 * fade))
 
-        draw_footer_overlay(canvas, debug_font, distance1, distance2, debug_mode, status_message)
         canvas = matrix.SwapOnVSync(canvas)
         time.sleep(FOUNTAIN_FRAME_DELAY)
 
@@ -611,14 +755,6 @@ def apply_command(command, settings, counter):
         settings["threshold_cm"] = clamp(settings["threshold_cm"] - 1, MIN_THRESHOLD, MAX_THRESHOLD)
         settings_changed = True
         status_message = f"THR {settings['threshold_cm']}"
-    elif command == "timeout_up":
-        settings["timeout_s"] = clamp(settings["timeout_s"] + 1, MIN_TIMEOUT, MAX_TIMEOUT)
-        settings_changed = True
-        status_message = f"TIME {settings['timeout_s']}"
-    elif command == "timeout_down":
-        settings["timeout_s"] = clamp(settings["timeout_s"] - 1, MIN_TIMEOUT, MAX_TIMEOUT)
-        settings_changed = True
-        status_message = f"TIME {settings['timeout_s']}"
     elif command == "debug_toggle":
         settings["debug_mode"] = not settings["debug_mode"]
         settings_changed = True
@@ -629,6 +765,23 @@ def apply_command(command, settings, counter):
         status_message = "COUNT RESET"
 
     return updated_counter, settings_changed, counter_changed, status_message
+
+
+def adjust_menu_setting(item, draft_settings, direction):
+    if item["type"] == "bool":
+        draft_settings[item["id"]] = not draft_settings[item["id"]]
+        return
+
+    value = draft_settings[item["id"]] + item["step"] * direction
+    draft_settings[item["id"]] = clamp(value, item["minimum"], item["maximum"])
+
+
+def commit_menu_input(item, draft_settings, input_buffer):
+    if item["type"] != "int" or input_buffer is None or input_buffer == "":
+        return
+
+    value = clamp(int(input_buffer), item["minimum"], item["maximum"])
+    draft_settings[item["id"]] = value
 
 
 uart1 = serial.Serial("/dev/ttyUSB0", baudrate=9600, timeout=1)
@@ -663,12 +816,29 @@ save_settings(SETTINGS_STATE_PATH, settings)
 print(f"Loaded counter={counter} from {COUNTER_STATE_PATH}", flush=True)
 print(f"Loaded settings={settings} from {SETTINGS_STATE_PATH}", flush=True)
 sensor1_triggered_at = None
+sensor2_ready_after_sensor1 = False
 distance1 = None
 distance2 = None
 last_command_id = None
 status_message = None
 status_expires_at = 0.0
+last_counted_at = None
+menu_open = False
+menu_edit_mode = False
+menu_index = 0
+menu_input_buffer = None
+menu_input_replace = False
+draft_settings = sanitize_settings(settings)
 offscreen_canvas = boot_screen(matrix, offscreen_canvas, font, big_font)
+if settings["base_distance_1_cm"] is None or settings["base_distance_2_cm"] is None:
+    settings["base_distance_1_cm"] = round(us100_1.distance)
+    settings["base_distance_2_cm"] = round(us100_2.distance)
+    save_settings(SETTINGS_STATE_PATH, settings)
+    print(
+        f"Initialized base distances to {settings['base_distance_1_cm']}cm/{settings['base_distance_2_cm']}cm",
+        flush=True,
+    )
+    draft_settings = sanitize_settings(settings)
 offscreen_canvas = fade_boot_to_counter(
     matrix,
     offscreen_canvas,
@@ -693,65 +863,211 @@ while True:
     if status_message and now >= status_expires_at:
         status_message = None
 
+    active_settings = draft_settings if menu_open else settings
     command, last_command_id = load_keyboard_command(KEYBOARD_COMMAND_PATH, last_command_id)
     if command is not None:
-        updated_counter, settings_changed, counter_changed, key_status = apply_command(command, settings, counter)
+        if menu_open:
+            selected_item = MENU_ITEMS[menu_index]
+            if command == "enter":
+                if selected_item["type"] == "action":
+                    if selected_item["id"] == "calibrate":
+                        render_calibrating_display(offscreen_canvas, debug_font)
+                        offscreen_canvas = matrix.SwapOnVSync(offscreen_canvas)
+                        base_1, base_2 = calibrate_base_distances(us100_1, us100_2)
+                        if base_1 is not None and base_2 is not None:
+                            draft_settings["base_distance_1_cm"] = base_1
+                            draft_settings["base_distance_2_cm"] = base_2
+                            settings["base_distance_1_cm"] = base_1
+                            settings["base_distance_2_cm"] = base_2
+                            save_settings(SETTINGS_STATE_PATH, settings)
+                            print(f"Calibrated base distances to {base_1}cm/{base_2}cm", flush=True)
+                        menu_edit_mode = False
+                        menu_input_buffer = None
+                        menu_input_replace = False
+                    elif selected_item["id"] == "reset_defaults":
+                        base_1 = draft_settings["base_distance_1_cm"]
+                        base_2 = draft_settings["base_distance_2_cm"]
+                        draft_settings = default_settings()
+                        draft_settings["base_distance_1_cm"] = base_1
+                        draft_settings["base_distance_2_cm"] = base_2
+                        menu_edit_mode = False
+                        menu_input_buffer = None
+                        menu_input_replace = False
+                    elif selected_item["id"] == "save_exit":
+                        settings = sanitize_settings(draft_settings)
+                        save_settings(SETTINGS_STATE_PATH, settings)
+                        print(f"Updated settings={settings}", flush=True)
+                        menu_open = False
+                        menu_edit_mode = False
+                        menu_input_buffer = None
+                        menu_input_replace = False
+                        status_message = None
+                elif selected_item["type"] == "bool":
+                    draft_settings[selected_item["id"]] = not draft_settings[selected_item["id"]]
+                    menu_edit_mode = False
+                    menu_input_buffer = None
+                    menu_input_replace = False
+                else:
+                    if menu_edit_mode:
+                        commit_menu_input(selected_item, draft_settings, menu_input_buffer)
+                        menu_input_buffer = None
+                        menu_input_replace = False
+                    else:
+                        menu_input_buffer = str(draft_settings[selected_item["id"]])
+                        menu_input_replace = True
+                    menu_edit_mode = not menu_edit_mode
+            elif command == "up":
+                if menu_edit_mode:
+                    commit_menu_input(selected_item, draft_settings, menu_input_buffer)
+                    menu_input_buffer = None
+                    menu_input_replace = False
+                    adjust_menu_setting(selected_item, draft_settings, 1)
+                else:
+                    menu_index = (menu_index - 1) % len(MENU_ITEMS)
+            elif command == "down":
+                if menu_edit_mode:
+                    commit_menu_input(selected_item, draft_settings, menu_input_buffer)
+                    menu_input_buffer = None
+                    menu_input_replace = False
+                    adjust_menu_setting(selected_item, draft_settings, -1)
+                else:
+                    menu_index = (menu_index + 1) % len(MENU_ITEMS)
+            elif command == "left" and menu_edit_mode:
+                commit_menu_input(selected_item, draft_settings, menu_input_buffer)
+                menu_input_buffer = None
+                menu_input_replace = False
+                adjust_menu_setting(selected_item, draft_settings, -1)
+            elif command == "right" and menu_edit_mode:
+                commit_menu_input(selected_item, draft_settings, menu_input_buffer)
+                menu_input_buffer = None
+                menu_input_replace = False
+                adjust_menu_setting(selected_item, draft_settings, 1)
+            elif command.startswith("digit:") and menu_edit_mode and selected_item["type"] == "int":
+                digit = command.split(":", 1)[1]
+                if menu_input_replace:
+                    menu_input_buffer = digit
+                    menu_input_replace = False
+                else:
+                    menu_input_buffer = (menu_input_buffer or "") + digit
+            elif command == "backspace" and menu_edit_mode and selected_item["type"] == "int":
+                if menu_input_replace:
+                    menu_input_buffer = ""
+                    menu_input_replace = False
+                else:
+                    menu_input_buffer = (menu_input_buffer or "")[:-1]
+            elif command == "space":
+                draft_settings["debug_mode"] = not draft_settings["debug_mode"]
+                menu_edit_mode = False
+                menu_input_buffer = None
+                menu_input_replace = False
+            elif command == "count_reset":
+                counter = 0
+                save_counter(COUNTER_STATE_PATH, counter)
+                sensor1_triggered_at = None
+                sensor2_ready_after_sensor1 = False
+                last_counted_at = None
+                print("Counter reset from keyboard", flush=True)
+        else:
+            if command == "enter":
+                menu_open = True
+                menu_edit_mode = False
+                menu_index = 0
+                menu_input_buffer = None
+                menu_input_replace = False
+                draft_settings = sanitize_settings(settings)
+            elif command == "space":
+                updated_counter, settings_changed, counter_changed, key_status = apply_command("debug_toggle", settings, counter)
+                if key_status:
+                    status_message, status_expires_at = set_status_message(key_status)
+                if settings_changed:
+                    save_settings(SETTINGS_STATE_PATH, settings)
+                    print(f"Updated settings={settings}", flush=True)
+                if counter_changed:
+                    counter = updated_counter
+                    save_counter(COUNTER_STATE_PATH, counter)
+                    sensor1_triggered_at = None
+                    sensor2_ready_after_sensor1 = False
+                    print("Counter reset from keyboard", flush=True)
+            elif command == "count_reset":
+                counter = 0
+                save_counter(COUNTER_STATE_PATH, counter)
+                sensor1_triggered_at = None
+                sensor2_ready_after_sensor1 = False
+                last_counted_at = None
+                print("Counter reset from keyboard", flush=True)
 
-        if key_status:
-            status_message, status_expires_at = set_status_message(key_status)
-
-        if settings_changed:
-            save_settings(SETTINGS_STATE_PATH, settings)
-            print(f"Updated settings={settings}", flush=True)
-
-        if counter_changed:
-            counter = updated_counter
-            save_counter(COUNTER_STATE_PATH, counter)
-            sensor1_triggered_at = None
-            print("Counter reset from keyboard", flush=True)
+    active_settings = draft_settings if menu_open else settings
 
     distance1 = us100_1.distance
     distance2 = us100_2.distance
 
-    if distance1 < settings["threshold_cm"]:
+    base_1 = active_settings["base_distance_1_cm"] if active_settings["base_distance_1_cm"] is not None else round(distance1)
+    base_2 = active_settings["base_distance_2_cm"] if active_settings["base_distance_2_cm"] is not None else round(distance2)
+    threshold_1 = max(1, base_1 - active_settings["threshold_cm"])
+    threshold_2 = max(1, base_2 - active_settings["threshold_cm"])
+
+    if distance1 < threshold_1:
         if sensor1_triggered_at is None:
             sensor1_triggered_at = time.time()
+            sensor2_ready_after_sensor1 = distance2 >= threshold_2
             print(f"Sensor 1 triggered: {distance1} cm", flush=True)
 
     if sensor1_triggered_at is not None:
-        if time.time() - sensor1_triggered_at > settings["timeout_s"]:
-            print(f"Timeout - sensor 2 did not trigger within {settings['timeout_s']}s", flush=True)
+        if not sensor2_ready_after_sensor1 and distance2 >= threshold_2:
+            sensor2_ready_after_sensor1 = True
+
+        if time.time() - sensor1_triggered_at > active_settings["timeout_ms"] / 1000.0:
+            print(f"Timeout - sensor 2 did not trigger within {active_settings['timeout_ms']}ms", flush=True)
             sensor1_triggered_at = None
-        elif distance2 < settings["threshold_cm"]:
+            sensor2_ready_after_sensor1 = False
+        elif sensor2_ready_after_sensor1 and distance2 < threshold_2:
             old_count = counter
             counter += 1
+            last_counted_at = time.time()
             save_counter(COUNTER_STATE_PATH, counter)
             print(f"Count! #{counter} (sensor1->sensor2)", flush=True)
             sensor1_triggered_at = None
-            offscreen_canvas = fountain(
-                matrix,
-                offscreen_canvas,
-                font,
-                big_font,
-                debug_font,
-                old_count,
-                counter,
-                distance1=distance1,
-                distance2=distance2,
-                debug_mode=settings["debug_mode"],
-                status_message=status_message,
-            )
+            sensor2_ready_after_sensor1 = False
+            if not menu_open:
+                offscreen_canvas = fountain(
+                    matrix,
+                    offscreen_canvas,
+                    font,
+                    big_font,
+                    debug_font,
+                    old_count,
+                    counter,
+                    distance1=distance1,
+                    distance2=distance2,
+                    debug_mode=active_settings["debug_mode"],
+                    status_message=status_message,
+                )
 
     print(f"d1={distance1:.0f}cm d2={distance2:.0f}cm count={counter}", flush=True)
-    offscreen_canvas = draw_counter_display(
-        matrix,
-        offscreen_canvas,
-        font,
-        big_font,
-        debug_font,
-        counter,
-        distance1=distance1,
-        distance2=distance2,
-        debug_mode=settings["debug_mode"],
-        status_message=status_message,
-    )
+    if menu_open:
+        render_menu_display(
+            offscreen_canvas,
+            debug_font,
+            draft_settings,
+            menu_index,
+            menu_edit_mode,
+            menu_input_buffer,
+            distance1,
+            distance2,
+            sensor1_triggered_at,
+            last_counted_at,
+        )
+        offscreen_canvas = matrix.SwapOnVSync(offscreen_canvas)
+    else:
+        offscreen_canvas = draw_counter_display(
+            matrix,
+            offscreen_canvas,
+            font,
+            big_font,
+            debug_font,
+            counter,
+            distance1=distance1,
+            distance2=distance2,
+            debug_mode=active_settings["debug_mode"],
+            status_message=status_message,
+        )
