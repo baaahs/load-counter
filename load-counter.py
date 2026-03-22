@@ -36,8 +36,8 @@ STATUS_MESSAGE_SECONDS = 2.0
 COUNT_TRIGGER_FLASH_SECONDS = 1.0
 MIN_THRESHOLD = 5
 MAX_THRESHOLD = 300
-MIN_TIMEOUT = 1
-MAX_TIMEOUT = 120
+MIN_TIMEOUT_MS = 100
+MAX_TIMEOUT_MS = 120_000
 BDF_GLYPHS = {}
 BOOT_TONE_MAP = {
     " ": (0, 0, 0),
@@ -83,8 +83,9 @@ BOOT_LOGO_ROWS = [
 ]
 
 MENU_ITEMS = [
-    {"id": "threshold_cm", "label": "THRESH", "type": "int", "step": 1, "minimum": MIN_THRESHOLD, "maximum": MAX_THRESHOLD},
-    {"id": "timeout_ms", "label": "TIME", "type": "int", "step": 100, "minimum": MIN_TIMEOUT * 1000, "maximum": MAX_TIMEOUT * 1000},
+    {"id": "counter_value", "label": "COUNT", "type": "int", "step": 1, "minimum": 0, "maximum": 999999},
+    {"id": "threshold_cm", "label": "THRESH (cm)", "type": "int", "step": 1, "minimum": MIN_THRESHOLD, "maximum": MAX_THRESHOLD},
+    {"id": "timeout_ms", "label": "TIME (s)", "type": "float", "step": 100, "minimum": MIN_TIMEOUT_MS, "maximum": MAX_TIMEOUT_MS},
     {"id": "debug_mode", "label": "DEBUG", "type": "bool"},
     {"id": "calibrate", "label": "CAL", "type": "action"},
     {"id": "reset_defaults", "label": "RESET", "type": "action"},
@@ -187,10 +188,10 @@ def sanitize_settings(raw_settings):
 
     try:
         if "timeout_ms" in raw_settings:
-            timeout_ms = int(raw_settings.get("timeout_ms", DEFAULT_TIMEOUT_MS))
+            timeout_ms = int(float(raw_settings.get("timeout_ms", DEFAULT_TIMEOUT_MS)))
         else:
-            timeout_ms = int(raw_settings.get("timeout_s", DEFAULT_TIMEOUT_MS / 1000)) * 1000
-        settings["timeout_ms"] = clamp(timeout_ms, MIN_TIMEOUT * 1000, MAX_TIMEOUT * 1000)
+            timeout_ms = round(float(raw_settings.get("timeout_s", DEFAULT_TIMEOUT_MS / 1000)) * 1000)
+        settings["timeout_ms"] = clamp(timeout_ms, MIN_TIMEOUT_MS, MAX_TIMEOUT_MS)
     except (TypeError, ValueError):
         pass
 
@@ -282,10 +283,12 @@ def draw_debug_overlay(canvas, debug_font, distance1, distance2, debug_mode):
         return
 
     baseline_y = HEIGHT
-    left_text = f"L:{distance1:.0f}"
-    right_text = f"R:{distance2:.0f}"
+    left_value = max(0, min(9999, round(distance1)))
+    right_value = max(0, min(9999, round(distance2)))
+    left_text = f"L:{left_value:>4}"
+    right_text = f"R:{right_value:>4}"
     debug_color = graphics.Color(96, 255, 96)
-    right_x = WIDTH - text_width(debug_font, right_text)
+    right_x = WIDTH - text_width(debug_font, "R:0000")
 
     graphics.DrawText(canvas, debug_font, 0, baseline_y, debug_color, left_text)
     graphics.DrawText(canvas, debug_font, right_x, baseline_y, debug_color, right_text)
@@ -338,16 +341,30 @@ def render_calibrating_display(canvas, debug_font):
     graphics.DrawText(canvas, debug_font, 20, 23, color, "2s")
 
 
-def menu_value_text(item, draft_settings):
+def format_timeout_seconds(timeout_ms):
+    return f"{timeout_ms / 1000:.1f}"
+
+
+def calibration_value_text(draft_settings):
+    base_1 = draft_settings.get("base_distance_1_cm")
+    base_2 = draft_settings.get("base_distance_2_cm")
+    if base_1 is None or base_2 is None:
+        return "--/--"
+    return f"L{base_1} R{base_2}"
+
+
+def menu_value_text(item, draft_settings, draft_counter):
     item_id = item["id"]
+    if item_id == "counter_value":
+        return str(draft_counter)
     if item_id == "threshold_cm":
-        return f"{draft_settings['threshold_cm']}cm"
+        return str(draft_settings["threshold_cm"])
     if item_id == "timeout_ms":
-        return f"{draft_settings['timeout_ms']}ms"
+        return format_timeout_seconds(draft_settings["timeout_ms"])
     if item_id == "debug_mode":
         return "ON" if draft_settings["debug_mode"] else "OFF"
     if item_id == "calibrate":
-        return "2s"
+        return calibration_value_text(draft_settings)
     if item_id == "reset_defaults":
         return "DEF"
     if item_id == "save_exit":
@@ -363,13 +380,29 @@ def trigger_status_text(sensor1_triggered_at, last_counted_at, now):
     return "IDL"
 
 
+def has_unsaved_menu_changes(settings, draft_settings, counter, draft_counter):
+    return sanitize_settings(draft_settings) != sanitize_settings(settings) or draft_counter != counter
+
+
+def render_save_changes_dialog(canvas, debug_font):
+    overlay_color = graphics.Color(255, 180, 80)
+    prompt = "SAVE CHANGES"
+    choices = "Y / N"
+    prompt_x = max(0, (WIDTH - text_width(debug_font, prompt)) // 2)
+    choices_x = max(0, (WIDTH - text_width(debug_font, choices)) // 2)
+    graphics.DrawText(canvas, debug_font, prompt_x, 13, overlay_color, prompt)
+    graphics.DrawText(canvas, debug_font, choices_x, 21, overlay_color, choices)
+
+
 def render_menu_display(
     canvas,
     debug_font,
     draft_settings,
+    draft_counter,
     selected_index,
     edit_mode,
     input_buffer,
+    confirm_exit_unsaved,
     distance1,
     distance2,
     sensor1_triggered_at,
@@ -400,8 +433,8 @@ def render_menu_display(
             value_color = editing_value
 
         label = f"{marker}{item['label']}"
-        value = menu_value_text(item, draft_settings)
-        if index == selected_index and edit_mode and item["type"] == "int" and input_buffer is not None:
+        value = menu_value_text(item, draft_settings, draft_counter)
+        if index == selected_index and edit_mode and item["type"] in ("int", "float") and input_buffer is not None:
             value = f"{input_buffer}_"
         value_x = WIDTH - text_width(debug_font, value)
 
@@ -417,6 +450,8 @@ def render_menu_display(
     graphics.DrawText(canvas, debug_font, 0, HEIGHT - 1, bottom_color, sensor_left)
     graphics.DrawText(canvas, debug_font, 18, HEIGHT - 1, bottom_color, sensor_right)
     graphics.DrawText(canvas, debug_font, WIDTH - text_width(debug_font, status_text), HEIGHT - 1, status_color, status_text)
+    if confirm_exit_unsaved:
+        render_save_changes_dialog(canvas, debug_font)
 
 
 def render_boot_screen(canvas, brightness=1.0):
@@ -776,21 +811,42 @@ def apply_command(command, settings, counter):
     return updated_counter, settings_changed, counter_changed, status_message
 
 
-def adjust_menu_setting(item, draft_settings, direction):
+def adjust_menu_setting(item, draft_settings, draft_counter, direction):
+    if item["id"] == "counter_value":
+        value = draft_counter + item["step"] * direction
+        return clamp(value, item["minimum"], item["maximum"])
+
     if item["type"] == "bool":
         draft_settings[item["id"]] = not draft_settings[item["id"]]
-        return
+        return draft_counter
 
     value = draft_settings[item["id"]] + item["step"] * direction
     draft_settings[item["id"]] = clamp(value, item["minimum"], item["maximum"])
+    return draft_counter
 
 
-def commit_menu_input(item, draft_settings, input_buffer):
-    if item["type"] != "int" or input_buffer is None or input_buffer == "":
-        return
+def commit_menu_input(item, draft_settings, draft_counter, input_buffer):
+    if item["type"] not in ("int", "float") or input_buffer is None or input_buffer == "":
+        return draft_counter
 
-    value = clamp(int(input_buffer), item["minimum"], item["maximum"])
+    if item["type"] == "float":
+        value = clamp(round(float(input_buffer) * 1000), item["minimum"], item["maximum"])
+    else:
+        value = clamp(int(input_buffer), item["minimum"], item["maximum"])
+    if item["id"] == "counter_value":
+        return value
+
     draft_settings[item["id"]] = value
+    return draft_counter
+
+
+def save_menu_changes(draft_settings, draft_counter):
+    counter_value = draft_counter
+    save_counter(COUNTER_STATE_PATH, counter_value)
+    saved_settings = sanitize_settings(draft_settings)
+    save_settings(SETTINGS_STATE_PATH, saved_settings)
+    print(f"Updated settings={saved_settings} counter={counter_value}", flush=True)
+    return saved_settings, counter_value
 
 
 uart1 = serial.Serial("/dev/ttyUSB0", baudrate=9600, timeout=1)
@@ -840,7 +896,9 @@ menu_edit_mode = False
 menu_index = 0
 menu_input_buffer = None
 menu_input_replace = False
+menu_confirm_exit_unsaved = False
 draft_settings = sanitize_settings(settings)
+draft_counter = counter
 offscreen_canvas = boot_screen(matrix, offscreen_canvas, font, big_font)
 if settings["base_distance_1_cm"] is None or settings["base_distance_2_cm"] is None:
     settings["base_distance_1_cm"] = round(us100_1.distance)
@@ -880,7 +938,25 @@ while True:
     if command is not None:
         if menu_open:
             selected_item = MENU_ITEMS[menu_index]
-            if command == "enter":
+            if menu_confirm_exit_unsaved:
+                if command == "yes":
+                    settings, counter = save_menu_changes(draft_settings, draft_counter)
+                    menu_open = False
+                    menu_edit_mode = False
+                    menu_input_buffer = None
+                    menu_input_replace = False
+                    menu_confirm_exit_unsaved = False
+                    status_message = None
+                elif command in ("no", "esc"):
+                    draft_settings = sanitize_settings(settings)
+                    draft_counter = counter
+                    menu_open = False
+                    menu_edit_mode = False
+                    menu_input_buffer = None
+                    menu_input_replace = False
+                    menu_confirm_exit_unsaved = False
+                    status_message = None
+            elif command == "enter":
                 if selected_item["type"] == "action":
                     if selected_item["id"] == "calibrate":
                         render_calibrating_display(offscreen_canvas, debug_font)
@@ -902,17 +978,17 @@ while True:
                         draft_settings = default_settings()
                         draft_settings["base_distance_1_cm"] = base_1
                         draft_settings["base_distance_2_cm"] = base_2
+                        draft_counter = counter
                         menu_edit_mode = False
                         menu_input_buffer = None
                         menu_input_replace = False
                     elif selected_item["id"] == "save_exit":
-                        settings = sanitize_settings(draft_settings)
-                        save_settings(SETTINGS_STATE_PATH, settings)
-                        print(f"Updated settings={settings}", flush=True)
+                        settings, counter = save_menu_changes(draft_settings, draft_counter)
                         menu_open = False
                         menu_edit_mode = False
                         menu_input_buffer = None
                         menu_input_replace = False
+                        menu_confirm_exit_unsaved = False
                         status_message = None
                 elif selected_item["type"] == "bool":
                     draft_settings[selected_item["id"]] = not draft_settings[selected_item["id"]]
@@ -921,47 +997,58 @@ while True:
                     menu_input_replace = False
                 else:
                     if menu_edit_mode:
-                        commit_menu_input(selected_item, draft_settings, menu_input_buffer)
+                        draft_counter = commit_menu_input(selected_item, draft_settings, draft_counter, menu_input_buffer)
                         menu_input_buffer = None
                         menu_input_replace = False
                     else:
-                        menu_input_buffer = str(draft_settings[selected_item["id"]])
+                        if selected_item["id"] == "counter_value":
+                            menu_input_buffer = str(draft_counter)
+                        elif selected_item["id"] == "timeout_ms":
+                            menu_input_buffer = format_timeout_seconds(draft_settings["timeout_ms"])
+                        else:
+                            menu_input_buffer = str(draft_settings[selected_item["id"]])
                         menu_input_replace = True
                     menu_edit_mode = not menu_edit_mode
             elif command == "up":
                 if menu_edit_mode:
-                    commit_menu_input(selected_item, draft_settings, menu_input_buffer)
+                    draft_counter = commit_menu_input(selected_item, draft_settings, draft_counter, menu_input_buffer)
                     menu_input_buffer = None
                     menu_input_replace = False
-                    adjust_menu_setting(selected_item, draft_settings, 1)
+                    draft_counter = adjust_menu_setting(selected_item, draft_settings, draft_counter, 1)
                 else:
                     menu_index = (menu_index - 1) % len(MENU_ITEMS)
             elif command == "down":
                 if menu_edit_mode:
-                    commit_menu_input(selected_item, draft_settings, menu_input_buffer)
+                    draft_counter = commit_menu_input(selected_item, draft_settings, draft_counter, menu_input_buffer)
                     menu_input_buffer = None
                     menu_input_replace = False
-                    adjust_menu_setting(selected_item, draft_settings, -1)
+                    draft_counter = adjust_menu_setting(selected_item, draft_settings, draft_counter, -1)
                 else:
                     menu_index = (menu_index + 1) % len(MENU_ITEMS)
             elif command == "left" and menu_edit_mode:
-                commit_menu_input(selected_item, draft_settings, menu_input_buffer)
+                draft_counter = commit_menu_input(selected_item, draft_settings, draft_counter, menu_input_buffer)
                 menu_input_buffer = None
                 menu_input_replace = False
-                adjust_menu_setting(selected_item, draft_settings, -1)
+                draft_counter = adjust_menu_setting(selected_item, draft_settings, draft_counter, -1)
             elif command == "right" and menu_edit_mode:
-                commit_menu_input(selected_item, draft_settings, menu_input_buffer)
+                draft_counter = commit_menu_input(selected_item, draft_settings, draft_counter, menu_input_buffer)
                 menu_input_buffer = None
                 menu_input_replace = False
-                adjust_menu_setting(selected_item, draft_settings, 1)
-            elif command.startswith("digit:") and menu_edit_mode and selected_item["type"] == "int":
+                draft_counter = adjust_menu_setting(selected_item, draft_settings, draft_counter, 1)
+            elif command.startswith("digit:") and menu_edit_mode and selected_item["type"] in ("int", "float"):
                 digit = command.split(":", 1)[1]
                 if menu_input_replace:
                     menu_input_buffer = digit
                     menu_input_replace = False
                 else:
                     menu_input_buffer = (menu_input_buffer or "") + digit
-            elif command == "backspace" and menu_edit_mode and selected_item["type"] == "int":
+            elif command == "dot" and menu_edit_mode and selected_item["type"] == "float":
+                if menu_input_replace:
+                    menu_input_buffer = "0."
+                    menu_input_replace = False
+                elif "." not in (menu_input_buffer or ""):
+                    menu_input_buffer = f"{menu_input_buffer or '0'}."
+            elif command == "backspace" and menu_edit_mode and selected_item["type"] in ("int", "float"):
                 if menu_input_replace:
                     menu_input_buffer = ""
                     menu_input_replace = False
@@ -972,6 +1059,17 @@ while True:
                 menu_edit_mode = False
                 menu_input_buffer = None
                 menu_input_replace = False
+            elif command == "esc":
+                if menu_edit_mode:
+                    draft_counter = commit_menu_input(selected_item, draft_settings, draft_counter, menu_input_buffer)
+                menu_edit_mode = False
+                menu_input_buffer = None
+                menu_input_replace = False
+                if has_unsaved_menu_changes(settings, draft_settings, counter, draft_counter):
+                    menu_confirm_exit_unsaved = True
+                else:
+                    menu_open = False
+                    menu_confirm_exit_unsaved = False
             elif command == "count_reset":
                 counter = 0
                 save_counter(COUNTER_STATE_PATH, counter)
@@ -986,7 +1084,9 @@ while True:
                 menu_index = 0
                 menu_input_buffer = None
                 menu_input_replace = False
+                menu_confirm_exit_unsaved = False
                 draft_settings = sanitize_settings(settings)
+                draft_counter = counter
             elif command == "space":
                 updated_counter, settings_changed, counter_changed, key_status = apply_command("debug_toggle", settings, counter)
                 if key_status:
@@ -1061,9 +1161,11 @@ while True:
             offscreen_canvas,
             debug_font,
             draft_settings,
+            draft_counter,
             menu_index,
             menu_edit_mode,
             menu_input_buffer,
+            menu_confirm_exit_unsaved,
             distance1,
             distance2,
             sensor1_triggered_at,
