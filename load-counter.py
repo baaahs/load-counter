@@ -38,6 +38,9 @@ MIN_THRESHOLD = 5
 MAX_THRESHOLD = 300
 MIN_TIMEOUT_MS = 100
 MAX_TIMEOUT_MS = 120_000
+CALIBRATION_SECONDS = 10.0
+IGNORE_MARGIN_CM = 1
+CALIBRATION_CLUSTER_SPAN_CM = 5
 BDF_GLYPHS = {}
 BOOT_TONE_MAP = {
     " ": (0, 0, 0),
@@ -87,6 +90,7 @@ MENU_ITEMS = [
     {"id": "threshold_cm", "label": "THRESH (cm)", "type": "int", "step": 1, "minimum": MIN_THRESHOLD, "maximum": MAX_THRESHOLD},
     {"id": "timeout_ms", "label": "TIME (s)", "type": "float", "step": 100, "minimum": MIN_TIMEOUT_MS, "maximum": MAX_TIMEOUT_MS},
     {"id": "debug_mode", "label": "DEBUG", "type": "bool"},
+    {"id": "play_animation", "label": "PLAY", "type": "action"},
     {"id": "calibrate", "label": "CAL", "type": "action"},
     {"id": "reset_defaults", "label": "RESET", "type": "action"},
     {"id": "save_exit", "label": "EXIT", "type": "action"},
@@ -278,7 +282,7 @@ def draw_status_overlay(canvas, debug_font, message):
     graphics.DrawText(canvas, debug_font, status_x, baseline_y, status_color, message)
 
 
-def draw_debug_overlay(canvas, debug_font, distance1, distance2, debug_mode):
+def draw_debug_overlay(canvas, debug_font, distance1, distance2, debug_mode, distance1_ignored=False, distance2_ignored=False):
     if not debug_mode or distance1 is None or distance2 is None:
         return
 
@@ -288,18 +292,36 @@ def draw_debug_overlay(canvas, debug_font, distance1, distance2, debug_mode):
     left_text = f"L:{left_value:>4}"
     right_text = f"R:{right_value:>4}"
     debug_color = graphics.Color(96, 255, 96)
+    ignored_color = graphics.Color(120, 120, 120)
     right_x = WIDTH - text_width(debug_font, "R:0000")
 
-    graphics.DrawText(canvas, debug_font, 0, baseline_y, debug_color, left_text)
-    graphics.DrawText(canvas, debug_font, right_x, baseline_y, debug_color, right_text)
+    graphics.DrawText(canvas, debug_font, 0, baseline_y, ignored_color if distance1_ignored else debug_color, left_text)
+    graphics.DrawText(canvas, debug_font, right_x, baseline_y, ignored_color if distance2_ignored else debug_color, right_text)
 
 
-def draw_footer_overlay(canvas, debug_font, distance1, distance2, debug_mode, status_message):
+def draw_footer_overlay(
+    canvas,
+    debug_font,
+    distance1,
+    distance2,
+    debug_mode,
+    status_message,
+    distance1_ignored=False,
+    distance2_ignored=False,
+):
     if status_message:
         draw_status_overlay(canvas, debug_font, status_message)
         return
 
-    draw_debug_overlay(canvas, debug_font, distance1, distance2, debug_mode)
+    draw_debug_overlay(
+        canvas,
+        debug_font,
+        distance1,
+        distance2,
+        debug_mode,
+        distance1_ignored=distance1_ignored,
+        distance2_ignored=distance2_ignored,
+    )
 
 
 def filtered_average(samples):
@@ -319,26 +341,91 @@ def filtered_average(samples):
     return round(sum(working) / len(working))
 
 
-def calibrate_base_distances(us100_1, us100_2, duration_seconds=2.0):
+def filtered_max(samples):
+    valid = sorted(float(sample) for sample in samples if 2 <= sample <= 3000)
+    if not valid:
+        return None
+
+    rounded = [round(sample) for sample in valid]
+    cluster_counts = {}
+    for sample in rounded:
+        for start in range(sample - CALIBRATION_CLUSTER_SPAN_CM, sample + 1):
+            cluster_counts[start] = cluster_counts.get(start, 0) + 1
+
+    best_start, _ = max(cluster_counts.items(), key=lambda item: (item[1], -abs(item[0] - round(valid[len(valid) // 2]))))
+    best_end = best_start + CALIBRATION_CLUSTER_SPAN_CM
+    stable = [sample for sample in valid if best_start <= sample <= best_end]
+    working = stable or valid
+    return max(working)
+
+
+def reading_is_ignored(distance, baseline):
+    return distance is not None and baseline is not None and distance > baseline + IGNORE_MARGIN_CM
+
+
+def effective_distance(distance, baseline, last_valid_distance):
+    if distance is None:
+        return None, False, last_valid_distance
+
+    if reading_is_ignored(distance, baseline):
+        return last_valid_distance, True, last_valid_distance
+
+    return distance, False, distance
+
+
+def calibrate_base_distances(us100_1, us100_2, duration_seconds=CALIBRATION_SECONDS, progress_callback=None):
     samples_1 = []
     samples_2 = []
-    deadline = time.time() + duration_seconds
+    started_at = time.time()
+    deadline = started_at + duration_seconds
 
     while time.time() < deadline:
         samples_1.append(us100_1.distance)
         samples_2.append(us100_2.distance)
+        base_1 = filtered_max(samples_1)
+        base_2 = filtered_max(samples_2)
+        if progress_callback is not None:
+            progress_callback(
+                {
+                    "remaining_seconds": max(0.0, deadline - time.time()),
+                    "current_1": samples_1[-1],
+                    "current_2": samples_2[-1],
+                    "calibrated_1": base_1,
+                    "calibrated_2": base_2,
+                }
+            )
         time.sleep(0.05)
 
-    return filtered_average(samples_1), filtered_average(samples_2)
+    return filtered_max(samples_1), filtered_max(samples_2)
 
 
-def render_calibrating_display(canvas, debug_font):
+def render_calibrating_display(canvas, debug_font, progress=None):
     canvas.Clear()
     color = graphics.Color(255, 180, 80)
-    message = "CALIBRATING"
+    value_color = graphics.Color(96, 255, 96)
+    remaining_seconds = CALIBRATION_SECONDS if progress is None else max(0, math.ceil(progress["remaining_seconds"]))
+    message = f"CALIBRATING ({remaining_seconds})"
     text_x = max(0, (WIDTH - text_width(debug_font, message)) // 2)
-    graphics.DrawText(canvas, debug_font, text_x, 15, color, message)
-    graphics.DrawText(canvas, debug_font, 20, 23, color, "2s")
+    graphics.DrawText(canvas, debug_font, text_x, 5, color, message)
+
+    if progress is None:
+        graphics.DrawText(canvas, debug_font, 0, 13, value_color, "L   0")
+        graphics.DrawText(canvas, debug_font, 32, 13, value_color, "R   0")
+        return
+
+    current_left = f"L{max(0, min(9999, round(progress['current_1']))):>4}"
+    current_right = f"R{max(0, min(9999, round(progress['current_2']))):>4}"
+    calibrated_left = f"C{round(progress['calibrated_1']):>4}" if progress["calibrated_1"] is not None else "C  --"
+    calibrated_right = f"C{round(progress['calibrated_2']):>4}" if progress["calibrated_2"] is not None else "C  --"
+    limit_left = f"I>{round(progress['calibrated_1'] + IGNORE_MARGIN_CM):>4}" if progress["calibrated_1"] is not None else "I> --"
+    limit_right = f"I>{round(progress['calibrated_2'] + IGNORE_MARGIN_CM):>4}" if progress["calibrated_2"] is not None else "I> --"
+
+    graphics.DrawText(canvas, debug_font, 0, 12, value_color, current_left)
+    graphics.DrawText(canvas, debug_font, 32, 12, value_color, current_right)
+    graphics.DrawText(canvas, debug_font, 0, 18, value_color, calibrated_left)
+    graphics.DrawText(canvas, debug_font, 32, 18, value_color, calibrated_right)
+    graphics.DrawText(canvas, debug_font, 0, 24, color, limit_left)
+    graphics.DrawText(canvas, debug_font, 32, 24, color, limit_right)
 
 
 def format_timeout_seconds(timeout_ms):
@@ -350,7 +437,7 @@ def calibration_value_text(draft_settings):
     base_2 = draft_settings.get("base_distance_2_cm")
     if base_1 is None or base_2 is None:
         return "--/--"
-    return f"L{base_1} R{base_2}"
+    return f"L{round(base_1)} R{round(base_2)}"
 
 
 def menu_value_text(item, draft_settings, draft_counter):
@@ -363,6 +450,8 @@ def menu_value_text(item, draft_settings, draft_counter):
         return format_timeout_seconds(draft_settings["timeout_ms"])
     if item_id == "debug_mode":
         return "ON" if draft_settings["debug_mode"] else "OFF"
+    if item_id == "play_animation":
+        return "GO"
     if item_id == "calibrate":
         return calibration_value_text(draft_settings)
     if item_id == "reset_defaults":
@@ -385,6 +474,7 @@ def has_unsaved_menu_changes(settings, draft_settings, counter, draft_counter):
 
 
 def render_save_changes_dialog(canvas, debug_font):
+    canvas.Clear()
     overlay_color = graphics.Color(255, 180, 80)
     prompt = "SAVE CHANGES"
     choices = "Y / N"
@@ -405,10 +495,16 @@ def render_menu_display(
     confirm_exit_unsaved,
     distance1,
     distance2,
+    distance1_ignored,
+    distance2_ignored,
     sensor1_triggered_at,
     last_counted_at,
 ):
     canvas.Clear()
+    if confirm_exit_unsaved:
+        render_save_changes_dialog(canvas, debug_font)
+        return
+
     normal_label = graphics.Color(120, 120, 180)
     selected_label = graphics.Color(255, 220, 100)
     normal_value = graphics.Color(220, 220, 220)
@@ -441,18 +537,22 @@ def render_menu_display(
         graphics.DrawText(canvas, debug_font, 0, baseline_y, label_color, label)
         graphics.DrawText(canvas, debug_font, value_x, baseline_y, value_color, value)
 
-    sensor_left = f"L{distance1:.0f}" if distance1 is not None else "L--"
-    sensor_right = f"R{distance2:.0f}" if distance2 is not None else "R--"
+    if distance1 is not None:
+        sensor_left = f"L{max(0, min(9999, round(distance1))):>4}"
+    else:
+        sensor_left = "L----"
+    if distance2 is not None:
+        sensor_right = f"R{max(0, min(9999, round(distance2))):>4}"
+    else:
+        sensor_right = "R----"
     status_text = trigger_status_text(sensor1_triggered_at, last_counted_at, time.time())
     bottom_color = graphics.Color(96, 255, 96)
+    ignored_color = graphics.Color(120, 120, 120)
     status_color = graphics.Color(255, 180, 80) if status_text == "CNT" else graphics.Color(180, 180, 255)
 
-    graphics.DrawText(canvas, debug_font, 0, HEIGHT - 1, bottom_color, sensor_left)
-    graphics.DrawText(canvas, debug_font, 18, HEIGHT - 1, bottom_color, sensor_right)
+    graphics.DrawText(canvas, debug_font, 0, HEIGHT - 1, ignored_color if distance1_ignored else bottom_color, sensor_left)
+    graphics.DrawText(canvas, debug_font, 24, HEIGHT - 1, ignored_color if distance2_ignored else bottom_color, sensor_right)
     graphics.DrawText(canvas, debug_font, WIDTH - text_width(debug_font, status_text), HEIGHT - 1, status_color, status_text)
-    if confirm_exit_unsaved:
-        render_save_changes_dialog(canvas, debug_font)
-
 
 def render_boot_screen(canvas, brightness=1.0):
     background = scale_color(BOOT_BACKGROUND, brightness)
@@ -594,6 +694,8 @@ def draw_counter_display(
     counter,
     distance1=None,
     distance2=None,
+    distance1_ignored=False,
+    distance2_ignored=False,
     debug_mode=False,
     status_message=None,
 ):
@@ -606,6 +708,8 @@ def draw_counter_display(
         counter,
         distance1=distance1,
         distance2=distance2,
+        distance1_ignored=distance1_ignored,
+        distance2_ignored=distance2_ignored,
         debug_mode=debug_mode,
         status_message=status_message,
     )
@@ -622,6 +726,8 @@ def render_counter_display(
     count_brightness=1.0,
     distance1=None,
     distance2=None,
+    distance1_ignored=False,
+    distance2_ignored=False,
     debug_mode=False,
     status_message=None,
 ):
@@ -636,7 +742,16 @@ def render_counter_display(
     count_width = text_width(big_font, num)
     num_y = count_baseline(big_font)
     graphics.DrawText(canvas, big_font, (WIDTH - count_width) // 2, num_y, count_color, num)
-    draw_footer_overlay(canvas, debug_font, distance1, distance2, debug_mode, status_message)
+    draw_footer_overlay(
+        canvas,
+        debug_font,
+        distance1,
+        distance2,
+        debug_mode,
+        status_message,
+        distance1_ignored=distance1_ignored,
+        distance2_ignored=distance2_ignored,
+    )
 
 
 def fade_boot_to_counter(
@@ -648,6 +763,8 @@ def fade_boot_to_counter(
     counter,
     distance1=None,
     distance2=None,
+    distance1_ignored=False,
+    distance2_ignored=False,
     debug_mode=False,
     status_message=None,
 ):
@@ -669,6 +786,8 @@ def fade_boot_to_counter(
             count_brightness=step / BOOT_FADE_STEPS,
             distance1=distance1,
             distance2=distance2,
+            distance1_ignored=distance1_ignored,
+            distance2_ignored=distance2_ignored,
             debug_mode=debug_mode,
             status_message=status_message,
         )
@@ -887,6 +1006,10 @@ sensor1_triggered_at = None
 sensor2_ready_after_sensor1 = False
 distance1 = None
 distance2 = None
+distance1_ignored = False
+distance2_ignored = False
+last_valid_distance1 = None
+last_valid_distance2 = None
 last_command_id = None
 status_message = None
 status_expires_at = 0.0
@@ -959,9 +1082,29 @@ while True:
             elif command == "enter":
                 if selected_item["type"] == "action":
                     if selected_item["id"] == "calibrate":
-                        render_calibrating_display(offscreen_canvas, debug_font)
+                        def update_calibration_display(progress):
+                            global offscreen_canvas
+                            render_calibrating_display(offscreen_canvas, debug_font, progress)
+                            offscreen_canvas = matrix.SwapOnVSync(offscreen_canvas)
+
+                        render_calibrating_display(
+                            offscreen_canvas,
+                            debug_font,
+                            {
+                                "remaining_seconds": CALIBRATION_SECONDS,
+                                "current_1": 0,
+                                "current_2": 0,
+                                "calibrated_1": None,
+                                "calibrated_2": None,
+                            },
+                        )
                         offscreen_canvas = matrix.SwapOnVSync(offscreen_canvas)
-                        base_1, base_2 = calibrate_base_distances(us100_1, us100_2)
+                        base_1, base_2 = calibrate_base_distances(
+                            us100_1,
+                            us100_2,
+                            duration_seconds=CALIBRATION_SECONDS,
+                            progress_callback=update_calibration_display,
+                        )
                         if base_1 is not None and base_2 is not None:
                             draft_settings["base_distance_1_cm"] = base_1
                             draft_settings["base_distance_2_cm"] = base_2
@@ -969,6 +1112,25 @@ while True:
                             settings["base_distance_2_cm"] = base_2
                             save_settings(SETTINGS_STATE_PATH, settings)
                             print(f"Calibrated base distances to {base_1}cm/{base_2}cm", flush=True)
+                        menu_edit_mode = False
+                        menu_input_buffer = None
+                        menu_input_replace = False
+                    elif selected_item["id"] == "play_animation":
+                        preview_count = min(draft_counter + 1, MENU_ITEMS[0]["maximum"])
+                        offscreen_canvas = fountain(
+                            matrix,
+                            offscreen_canvas,
+                            font,
+                            big_font,
+                            debug_font,
+                            draft_counter,
+                            preview_count,
+                            distance1=distance1,
+                            distance2=distance2,
+                            debug_mode=False,
+                            status_message=None,
+                        )
+                        draft_counter = preview_count
                         menu_edit_mode = False
                         menu_input_buffer = None
                         menu_input_replace = False
@@ -1110,29 +1272,35 @@ while True:
 
     active_settings = draft_settings if menu_open else settings
 
-    distance1 = us100_1.distance
-    distance2 = us100_2.distance
+    raw_distance1 = us100_1.distance
+    raw_distance2 = us100_2.distance
+    baseline_1 = active_settings["base_distance_1_cm"]
+    baseline_2 = active_settings["base_distance_2_cm"]
+    filtered_distance1, distance1_ignored, last_valid_distance1 = effective_distance(raw_distance1, baseline_1, last_valid_distance1)
+    filtered_distance2, distance2_ignored, last_valid_distance2 = effective_distance(raw_distance2, baseline_2, last_valid_distance2)
+    distance1 = raw_distance1
+    distance2 = raw_distance2
 
-    base_1 = active_settings["base_distance_1_cm"] if active_settings["base_distance_1_cm"] is not None else round(distance1)
-    base_2 = active_settings["base_distance_2_cm"] if active_settings["base_distance_2_cm"] is not None else round(distance2)
+    base_1 = active_settings["base_distance_1_cm"] if active_settings["base_distance_1_cm"] is not None else round(filtered_distance1 or raw_distance1)
+    base_2 = active_settings["base_distance_2_cm"] if active_settings["base_distance_2_cm"] is not None else round(filtered_distance2 or raw_distance2)
     threshold_1 = max(1, base_1 - active_settings["threshold_cm"])
     threshold_2 = max(1, base_2 - active_settings["threshold_cm"])
 
-    if distance1 < threshold_1:
+    if filtered_distance1 is not None and filtered_distance1 < threshold_1:
         if sensor1_triggered_at is None:
             sensor1_triggered_at = time.time()
-            sensor2_ready_after_sensor1 = distance2 >= threshold_2
-            print(f"Sensor 1 triggered: {distance1} cm", flush=True)
+            sensor2_ready_after_sensor1 = filtered_distance2 is not None and filtered_distance2 >= threshold_2
+            print(f"Sensor 1 triggered: {filtered_distance1} cm", flush=True)
 
     if sensor1_triggered_at is not None:
-        if not sensor2_ready_after_sensor1 and distance2 >= threshold_2:
+        if not sensor2_ready_after_sensor1 and filtered_distance2 is not None and filtered_distance2 >= threshold_2:
             sensor2_ready_after_sensor1 = True
 
         if time.time() - sensor1_triggered_at > active_settings["timeout_ms"] / 1000.0:
             print(f"Timeout - sensor 2 did not trigger within {active_settings['timeout_ms']}ms", flush=True)
             sensor1_triggered_at = None
             sensor2_ready_after_sensor1 = False
-        elif sensor2_ready_after_sensor1 and distance2 < threshold_2:
+        elif sensor2_ready_after_sensor1 and filtered_distance2 is not None and filtered_distance2 < threshold_2:
             old_count = counter
             counter += 1
             last_counted_at = time.time()
@@ -1155,7 +1323,11 @@ while True:
                     status_message=status_message,
                 )
 
-    print(f"d1={distance1:.0f}cm d2={distance2:.0f}cm count={counter}", flush=True)
+    print(
+        f"d1={distance1:.0f}cm{' ignored' if distance1_ignored else ''} "
+        f"d2={distance2:.0f}cm{' ignored' if distance2_ignored else ''} count={counter}",
+        flush=True,
+    )
     if menu_open:
         render_menu_display(
             offscreen_canvas,
@@ -1168,6 +1340,8 @@ while True:
             menu_confirm_exit_unsaved,
             distance1,
             distance2,
+            distance1_ignored,
+            distance2_ignored,
             sensor1_triggered_at,
             last_counted_at,
         )
@@ -1182,6 +1356,8 @@ while True:
             counter,
             distance1=distance1,
             distance2=distance2,
+            distance1_ignored=distance1_ignored,
+            distance2_ignored=distance2_ignored,
             debug_mode=active_settings["debug_mode"],
             status_message=status_message,
         )
