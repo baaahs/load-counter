@@ -13,6 +13,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 DEFAULT_THRESHOLD = 40  # cm
 DEFAULT_TIMEOUT_MS = 20_000
+DEFAULT_COOLDOWN_MS = 10_000
 WIDTH = 64
 HEIGHT = 32
 COUNT_TOP = 11
@@ -38,6 +39,8 @@ MIN_THRESHOLD = 5
 MAX_THRESHOLD = 300
 MIN_TIMEOUT_MS = 100
 MAX_TIMEOUT_MS = 120_000
+MIN_COOLDOWN_MS = 0
+MAX_COOLDOWN_MS = 120_000
 CALIBRATION_SECONDS = 10.0
 IGNORE_MARGIN_CM = 1
 CALIBRATION_CLUSTER_SPAN_CM = 5
@@ -86,12 +89,13 @@ BOOT_LOGO_ROWS = [
 ]
 
 MENU_ITEMS = [
+    {"id": "calibrate", "label": "CAL", "type": "action"},
     {"id": "counter_value", "label": "COUNT", "type": "int", "step": 1, "minimum": 0, "maximum": 999999},
     {"id": "threshold_cm", "label": "THRESH (cm)", "type": "int", "step": 1, "minimum": MIN_THRESHOLD, "maximum": MAX_THRESHOLD},
     {"id": "timeout_ms", "label": "TIME (s)", "type": "float", "step": 100, "minimum": MIN_TIMEOUT_MS, "maximum": MAX_TIMEOUT_MS},
+    {"id": "cooldown_ms", "label": "COOLDWN (s)", "type": "float", "step": 100, "minimum": MIN_COOLDOWN_MS, "maximum": MAX_COOLDOWN_MS},
     {"id": "debug_mode", "label": "DEBUG", "type": "bool"},
     {"id": "play_animation", "label": "PLAY", "type": "action"},
-    {"id": "calibrate", "label": "CAL", "type": "action"},
     {"id": "reset_defaults", "label": "RESET", "type": "action"},
     {"id": "save_exit", "label": "EXIT", "type": "action"},
 ]
@@ -174,6 +178,7 @@ def default_settings():
     return {
         "threshold_cm": DEFAULT_THRESHOLD,
         "timeout_ms": DEFAULT_TIMEOUT_MS,
+        "cooldown_ms": DEFAULT_COOLDOWN_MS,
         "debug_mode": DEFAULT_DEBUG_MODE,
         "base_distance_1_cm": None,
         "base_distance_2_cm": None,
@@ -196,6 +201,15 @@ def sanitize_settings(raw_settings):
         else:
             timeout_ms = round(float(raw_settings.get("timeout_s", DEFAULT_TIMEOUT_MS / 1000)) * 1000)
         settings["timeout_ms"] = clamp(timeout_ms, MIN_TIMEOUT_MS, MAX_TIMEOUT_MS)
+    except (TypeError, ValueError):
+        pass
+
+    try:
+        if "cooldown_ms" in raw_settings:
+            cooldown_ms = int(float(raw_settings.get("cooldown_ms", DEFAULT_COOLDOWN_MS)))
+        else:
+            cooldown_ms = round(float(raw_settings.get("cooldown_s", DEFAULT_COOLDOWN_MS / 1000)) * 1000)
+        settings["cooldown_ms"] = clamp(cooldown_ms, MIN_COOLDOWN_MS, MAX_COOLDOWN_MS)
     except (TypeError, ValueError):
         pass
 
@@ -448,6 +462,8 @@ def menu_value_text(item, draft_settings, draft_counter):
         return str(draft_settings["threshold_cm"])
     if item_id == "timeout_ms":
         return format_timeout_seconds(draft_settings["timeout_ms"])
+    if item_id == "cooldown_ms":
+        return format_timeout_seconds(draft_settings["cooldown_ms"])
     if item_id == "debug_mode":
         return "ON" if draft_settings["debug_mode"] else "OFF"
     if item_id == "play_animation":
@@ -461,9 +477,11 @@ def menu_value_text(item, draft_settings, draft_counter):
     return ""
 
 
-def trigger_status_text(sensor1_triggered_at, last_counted_at, now):
+def trigger_status_text(sensor1_triggered_at, last_counted_at, now, cooldown_active=False):
     if last_counted_at is not None and now - last_counted_at <= COUNT_TRIGGER_FLASH_SECONDS:
         return "CNT"
+    if cooldown_active:
+        return "CLD"
     if sensor1_triggered_at is not None:
         return "ARM"
     return "IDL"
@@ -499,6 +517,7 @@ def render_menu_display(
     distance2_ignored,
     sensor1_triggered_at,
     last_counted_at,
+    cooldown_active,
 ):
     canvas.Clear()
     if confirm_exit_unsaved:
@@ -545,7 +564,7 @@ def render_menu_display(
         sensor_right = f"R{max(0, min(9999, round(distance2))):>4}"
     else:
         sensor_right = "R----"
-    status_text = trigger_status_text(sensor1_triggered_at, last_counted_at, time.time())
+    status_text = trigger_status_text(sensor1_triggered_at, last_counted_at, time.time(), cooldown_active=cooldown_active)
     bottom_color = graphics.Color(96, 255, 96)
     ignored_color = graphics.Color(120, 120, 120)
     status_color = graphics.Color(255, 180, 80) if status_text == "CNT" else graphics.Color(180, 180, 255)
@@ -1165,8 +1184,10 @@ while True:
                     else:
                         if selected_item["id"] == "counter_value":
                             menu_input_buffer = str(draft_counter)
-                        elif selected_item["id"] == "timeout_ms":
+                        elif selected_item["id"] in ("timeout_ms", "cooldown_ms"):
                             menu_input_buffer = format_timeout_seconds(draft_settings["timeout_ms"])
+                            if selected_item["id"] == "cooldown_ms":
+                                menu_input_buffer = format_timeout_seconds(draft_settings["cooldown_ms"])
                         else:
                             menu_input_buffer = str(draft_settings[selected_item["id"]])
                         menu_input_replace = True
@@ -1285,8 +1306,15 @@ while True:
     base_2 = active_settings["base_distance_2_cm"] if active_settings["base_distance_2_cm"] is not None else round(filtered_distance2 or raw_distance2)
     threshold_1 = max(1, base_1 - active_settings["threshold_cm"])
     threshold_2 = max(1, base_2 - active_settings["threshold_cm"])
+    cooldown_active = (
+        last_counted_at is not None
+        and now - last_counted_at < active_settings["cooldown_ms"] / 1000.0
+    )
 
-    if filtered_distance1 is not None and filtered_distance1 < threshold_1:
+    if cooldown_active:
+        sensor1_triggered_at = None
+        sensor2_ready_after_sensor1 = False
+    elif filtered_distance1 is not None and filtered_distance1 < threshold_1:
         if sensor1_triggered_at is None:
             sensor1_triggered_at = time.time()
             sensor2_ready_after_sensor1 = filtered_distance2 is not None and filtered_distance2 >= threshold_2
@@ -1344,6 +1372,7 @@ while True:
             distance2_ignored,
             sensor1_triggered_at,
             last_counted_at,
+            cooldown_active,
         )
         offscreen_canvas = matrix.SwapOnVSync(offscreen_canvas)
     else:
