@@ -25,6 +25,7 @@ class RGBMatrixOptions:
     chain_length: int = 1
     parallel: int = 1
     hardware_mapping: str | None = None
+    brightness: int = 100
 
 
 class Canvas:
@@ -56,6 +57,7 @@ class RGBMatrix:
         self.rows = options.rows
         self.cols = options.cols
         self.scale = scale
+        self.brightness = options.brightness
         self._queue: list = []
         self._lock = threading.Lock()
 
@@ -95,12 +97,17 @@ class RGBMatrix:
         draw = ImageDraw.Draw(out)
 
         pixels = canvas.img.load()
+        brightness = max(0, min(100, int(getattr(self, "brightness", 100)))) / 100.0
         for y in range(self.rows):
             for x in range(self.cols):
                 r, g, b = pixels[x, y]
                 cx = x * s + s // 2
                 cy = y * s + s // 2
-                color = (r, g, b) if (r or g or b) else (20, 20, 20)
+                color = (
+                    (int(r * brightness), int(g * brightness), int(b * brightness))
+                    if (r or g or b)
+                    else (int(20 * brightness), int(20 * brightness), int(20 * brightness))
+                )
                 draw.ellipse(
                     [cx - radius, cy - radius, cx + radius, cy + radius],
                     fill=color,
