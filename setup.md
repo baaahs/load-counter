@@ -10,6 +10,7 @@ This file documents the clean Raspberry Pi setup steps used to restore this proj
 - Services:
   - `loadcounter.service`
   - `loadcounter-keyboard.service`
+  - `loadcounter-ble.service`
 
 ## 1. Copy project files to the Pi
 
@@ -19,9 +20,11 @@ From the local repo:
 scp -r \
   load-counter.py \
   keyboard-listener.py \
+  loadcounter-ble.py \
   test-ultrasonic.sensors.py \
   loadcounter.service \
   loadcounter-keyboard.service \
+  loadcounter-ble.service \
   fonts \
   deploy.sh \
   logs.sh \
@@ -78,6 +81,7 @@ cd /home/jul/loadcounter
 ./env/bin/pip install \
   pyserial \
   evdev \
+  dbus-next \
   adafruit-circuitpython-us100 \
   pillow \
   scikit-build-core \
@@ -92,8 +96,9 @@ On the Pi:
 cd /home/jul/loadcounter
 sudo cp loadcounter.service /etc/systemd/system/loadcounter.service
 sudo cp loadcounter-keyboard.service /etc/systemd/system/loadcounter-keyboard.service
+sudo cp loadcounter-ble.service /etc/systemd/system/loadcounter-ble.service
 sudo systemctl daemon-reload
-sudo systemctl enable loadcounter.service loadcounter-keyboard.service
+sudo systemctl enable loadcounter.service loadcounter-keyboard.service loadcounter-ble.service
 ```
 
 ## 6. Prepare persistent state directories
@@ -102,7 +107,7 @@ On the Pi:
 
 ```bash
 sudo install -d -o daemon -g daemon /var/lib/loadcounter
-sudo install -d -o jul -g jul /var/tmp/loadcounter
+sudo install -d -m 2770 -o jul -g daemon /var/tmp/loadcounter
 ```
 
 ## 7. Build the real RGB matrix Python binding
@@ -178,8 +183,8 @@ sudo rm -f /swapfile-loadcounter
 On the Pi:
 
 ```bash
-sudo systemctl restart loadcounter.service loadcounter-keyboard.service
-sudo systemctl status loadcounter.service loadcounter-keyboard.service --no-pager -l
+sudo systemctl restart loadcounter.service loadcounter-keyboard.service loadcounter-ble.service
+sudo systemctl status loadcounter.service loadcounter-keyboard.service loadcounter-ble.service --no-pager -l
 ```
 
 ## 10. Validate device availability
@@ -195,6 +200,7 @@ Keyboard input devices:
 ```bash
 ls -l /dev/input/event*
 sudo journalctl -u loadcounter-keyboard -n 100 --no-pager
+sudo journalctl -u loadcounter-ble -n 100 --no-pager
 ```
 
 Loadcounter logs:

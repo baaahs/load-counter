@@ -47,6 +47,47 @@ Edit the Python files locally, then push to the Pi and restart:
 ./logs.sh status       # service status
 ```
 
+### Counter event logs
+
+Count events are appended as JSON Lines on the Pi:
+
+```
+/var/lib/loadcounter/events.jsonl
+```
+
+Logged event names are `counter_triggered`, `manual_number_changed`, and
+`counter_reset`.
+
+### Control from your Mac keyboard
+
+Run the remote keyboard controller from this repo:
+
+```
+./loadcounter-remote.py
+```
+
+It opens one SSH connection to `jul@raspberry.local` and sends the same commands
+the Bluetooth keyboard listener writes on the Pi. Use the arrow keys, Return,
+Escape, Space, digits, `.`, Backspace, `r`, `y`, and `n`. Press `q` or Ctrl+C to
+quit the Mac controller.
+
+For one-shot commands:
+
+```
+./loadcounter-remote.py --send esc no enter
+```
+
+### Control from iPhone over Bluetooth
+
+Open the SwiftUI app project in Xcode:
+
+```
+ios/LoadCounterRemote/LoadCounterRemote.xcodeproj
+```
+
+Run it on the iPhone, then tap Connect. The Pi advertises as `LoadCounter`
+through the `loadcounter-ble.service` systemd service.
+
 ### Test sensors
 
 ```
@@ -60,6 +101,8 @@ cd ~/loadcounter
 | File | Description |
 |------|-------------|
 | `load-counter.py` | Main script — reads sensors, displays on matrix |
+| `loadcounter-remote.py` | Mac-side CLI keyboard controller over SSH |
+| `loadcounter-ble.py` | Pi-side Bluetooth Low Energy command bridge |
 | `test-ultrasonic.sensors.py` | Sensor test script (distance + temperature) |
 | `fonts/` | BDF bitmap fonts for the matrix display |
 | `loadcounter.service` | systemd unit file |

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 PI="jul@raspberry.local"
-SERVICES="loadcounter loadcounter-keyboard"
+SERVICES="loadcounter loadcounter-keyboard loadcounter-ble"
 
 usage() {
     echo "Usage: ./logs.sh [command]"
@@ -25,18 +25,18 @@ case "$CMD" in
         ;;
     live)
         echo "==> Following live logs (Ctrl+C to stop)..."
-        ssh "$PI" "sudo journalctl -u loadcounter -u loadcounter-keyboard -f --no-pager"
+        ssh "$PI" "sudo journalctl -u loadcounter -u loadcounter-keyboard -u loadcounter-ble -f --no-pager"
         ;;
     last)
         N="${2:-100}"
-        ssh "$PI" "sudo journalctl -u loadcounter -u loadcounter-keyboard -n $N --no-pager"
+        ssh "$PI" "sudo journalctl -u loadcounter -u loadcounter-keyboard -u loadcounter-ble -n $N --no-pager"
         ;;
     prev)
         echo "==> Logs from previous boot..."
-        ssh "$PI" "sudo journalctl -u loadcounter -u loadcounter-keyboard -b -1 --no-pager"
+        ssh "$PI" "sudo journalctl -u loadcounter -u loadcounter-keyboard -u loadcounter-ble -b -1 --no-pager"
         ;;
     today)
-        ssh "$PI" "sudo journalctl -u loadcounter -u loadcounter-keyboard --since today --no-pager"
+        ssh "$PI" "sudo journalctl -u loadcounter -u loadcounter-keyboard -u loadcounter-ble --since today --no-pager"
         ;;
     status)
         ssh "$PI" "sudo systemctl status $SERVICES --no-pager -l"
