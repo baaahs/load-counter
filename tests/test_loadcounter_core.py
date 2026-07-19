@@ -190,6 +190,31 @@ class LoadCounterCoreTests(unittest.TestCase):
         self.assertEqual(counted_events, 0, f"stuck sensors produced {counted_events} counts")
         self.assertIsNone(state["last_counted_at"])
 
+    def test_sustained_occupancy_with_noisy_sensor_b_does_not_keep_incrementing(self):
+        settings = self.trigger_settings()
+        settings["cooldown_ms"] = 250
+        events, state = self.run_trigger_stream(
+            [
+                (0.0, 70, 70),
+                (0.2, 70, 100),
+                (0.3, 70, 70),
+                (0.6, 70, 70),
+                (0.7, 70, 100),
+                (0.8, 70, 70),
+                (1.1, 70, 70),
+                (1.2, 70, 100),
+                (1.3, 70, 70),
+                (1.6, 70, 70),
+                (1.7, 70, 100),
+                (1.8, 70, 70),
+            ],
+            settings=settings,
+        )
+
+        counted_events = sum(event["counted"] for event in events)
+        self.assertEqual(counted_events, 0, f"sustained occupancy produced {counted_events} counts")
+        self.assertIsNone(state["last_counted_at"])
+
     def test_sensor_b_must_trigger_before_timeout(self):
         events, state = self.run_trigger_stream([
             (0.0, 100, 100),
