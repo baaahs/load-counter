@@ -9,7 +9,8 @@ struct ContentView: View {
     @State private var editingNumericField: NumericField?
     @State private var numericDraft = ""
     @FocusState private var focusedNumericField: NumericField?
-    @State private var thresholdCm = 40
+    @State private var triggerDistanceCm = 40
+    @State private var neutralMarginCm = 8
     @State private var timeoutSeconds = 20.0
     @State private var cooldownSeconds = 10.0
     @State private var brightness = 100.0
@@ -22,7 +23,8 @@ struct ContentView: View {
 
     private enum NumericField: Hashable {
         case counter
-        case threshold
+        case triggerDistance
+        case neutralMargin
         case timeout
         case cooldown
         case brightness
@@ -208,11 +210,11 @@ struct ContentView: View {
 
                 if hasLearnedValues(learning) {
                     LabeledContent {
-                        Text(learning.learnedThresholdCm.map { "\($0) cm" } ?? "--")
+                        Text(learning.learnedTriggerDistanceCm.map { "\($0) cm" } ?? "--")
                             .monospacedDigit()
                             .foregroundStyle(.secondary)
                     } label: {
-                        Label("Threshold", systemImage: "ruler")
+                        Label("Trigger Distance", systemImage: "ruler")
                             .foregroundStyle(.purple)
                     }
 
@@ -273,9 +275,16 @@ struct ContentView: View {
     private var timingSection: some View {
         Section("Timing") {
             editableNumberRow(
-                field: .threshold,
-                title: "Threshold",
-                value: "\(thresholdCm) cm",
+                field: .triggerDistance,
+                title: "Trigger Distance",
+                value: "\(triggerDistanceCm) cm",
+                systemImage: "ruler"
+            )
+
+            editableNumberRow(
+                field: .neutralMargin,
+                title: "Neutral Margin",
+                value: "\(neutralMarginCm) cm",
                 systemImage: "ruler"
             )
 
@@ -551,8 +560,11 @@ struct ContentView: View {
         if editingNumericField != .counter {
             counterText = "\(state.counter)"
         }
-        if editingNumericField != .threshold {
-            thresholdCm = state.settings.thresholdCm
+        if editingNumericField != .triggerDistance {
+            triggerDistanceCm = state.settings.triggerDistanceCm
+        }
+        if editingNumericField != .neutralMargin {
+            neutralMarginCm = state.settings.neutralMarginCm
         }
         if editingNumericField != .timeout {
             timeoutSeconds = Double(state.settings.timeoutMs) / 1000
@@ -581,8 +593,10 @@ struct ContentView: View {
         switch field {
         case .counter:
             numericDraft = counterText.isEmpty ? "" : counterText
-        case .threshold:
-            numericDraft = "\(thresholdCm)"
+        case .triggerDistance:
+            numericDraft = "\(triggerDistanceCm)"
+        case .neutralMargin:
+            numericDraft = "\(neutralMarginCm)"
         case .timeout:
             numericDraft = numericSecondsText(timeoutSeconds)
         case .cooldown:
@@ -609,10 +623,14 @@ struct ContentView: View {
             let value = clampedInt(numericDraft, minimum: 0, maximum: 999999)
             counterText = "\(value)"
             bluetooth.send("counter:\(value)", feedback: "Count \(value)")
-        case .threshold:
+        case .triggerDistance:
             let value = clampedInt(numericDraft, minimum: 5, maximum: 300)
-            thresholdCm = value
-            bluetooth.send("threshold_cm:\(value)", feedback: "Threshold \(value) cm")
+            triggerDistanceCm = value
+            bluetooth.send("trigger_distance_cm:\(value)", feedback: "Trigger distance \(value) cm")
+        case .neutralMargin:
+            let value = clampedInt(numericDraft, minimum: 0, maximum: 300)
+            neutralMarginCm = value
+            bluetooth.send("neutral_margin_cm:\(value)", feedback: "Neutral margin \(value) cm")
         case .timeout:
             let value = clampedDouble(numericDraft, minimum: 0.1, maximum: 120)
             timeoutSeconds = roundedTenths(value)
@@ -656,13 +674,13 @@ struct ContentView: View {
         switch field {
         case .timeout, .cooldown:
             return true
-        case .counter, .threshold, .brightness:
+        case .counter, .triggerDistance, .neutralMargin, .brightness:
             return false
         }
     }
 
     private func hasLearnedValues(_ learning: LoadCounterLearningState) -> Bool {
-        learning.learnedThresholdCm != nil
+        learning.learnedTriggerDistanceCm != nil
             || learning.learnedTimeoutMs != nil
             || learning.learnedCooldownMs != nil
             || learning.learnedSensorOrder != nil
@@ -683,7 +701,7 @@ struct ContentView: View {
         switch field {
         case .counter:
             return nil
-        case .threshold:
+        case .triggerDistance, .neutralMargin:
             return "cm"
         case .timeout, .cooldown:
             return "s"

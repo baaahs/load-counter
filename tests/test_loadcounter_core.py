@@ -28,7 +28,8 @@ class LoadCounterCoreTests(unittest.TestCase):
 
     def test_sanitize_settings_clamps_values_and_sensor_order(self):
         settings = self.core.sanitize_settings({
-            "threshold_cm": 999,
+            "trigger_distance_cm": 999,
+            "neutral_margin_cm": 999,
             "timeout_ms": -1,
             "cooldown_ms": 999_999,
             "brightness_percent": 0,
@@ -38,7 +39,8 @@ class LoadCounterCoreTests(unittest.TestCase):
             "base_distance_2_cm": "bad",
         })
 
-        self.assertEqual(settings["threshold_cm"], self.core.MAX_THRESHOLD)
+        self.assertEqual(settings["trigger_distance_cm"], self.core.MAX_TRIGGER_DISTANCE)
+        self.assertEqual(settings["neutral_margin_cm"], self.core.MAX_NEUTRAL_MARGIN)
         self.assertEqual(settings["timeout_ms"], self.core.MIN_TIMEOUT_MS)
         self.assertEqual(settings["cooldown_ms"], self.core.MAX_COOLDOWN_MS)
         self.assertEqual(settings["brightness_percent"], self.core.MIN_BRIGHTNESS_PERCENT)
@@ -86,13 +88,14 @@ class LoadCounterCoreTests(unittest.TestCase):
         self.assertEqual(result["timeout_ms"], 1400)
         self.assertEqual(result["base_distance_1_cm"], 100)
         self.assertEqual(result["base_distance_2_cm"], 100)
-        self.assertGreaterEqual(result["threshold_cm"], self.core.MIN_THRESHOLD)
+        self.assertGreaterEqual(result["trigger_distance_cm"], self.core.MIN_TRIGGER_DISTANCE)
         self.assertGreaterEqual(result["cooldown_ms"], 1000)
 
     def trigger_settings(self, sensor_order=None):
         settings = self.core.default_settings()
         settings.update({
-            "threshold_cm": 20,
+            "trigger_distance_cm": 20,
+            "neutral_margin_cm": 8,
             "timeout_ms": 1000,
             "cooldown_ms": 2000,
             "sensor_order": sensor_order or self.core.SENSOR_ORDER_AB,
@@ -119,18 +122,23 @@ class LoadCounterCoreTests(unittest.TestCase):
                 settings["base_distance_2_cm"],
                 last_valid_2,
             )
-            threshold_1 = settings["base_distance_1_cm"] - settings["threshold_cm"]
-            threshold_2 = settings["base_distance_2_cm"] - settings["threshold_cm"]
+            trigger_threshold_1 = settings["base_distance_1_cm"] - settings["trigger_distance_cm"]
+            trigger_threshold_2 = settings["base_distance_2_cm"] - settings["trigger_distance_cm"]
+            neutral_threshold_1 = settings["base_distance_1_cm"] - settings["neutral_margin_cm"]
+            neutral_threshold_2 = settings["base_distance_2_cm"] - settings["neutral_margin_cm"]
             sensor_a, sensor_b = self.core.logical_sensor_values(settings, filtered_1, filtered_2)
-            threshold_a, threshold_b = self.core.logical_sensor_values(settings, threshold_1, threshold_2)
+            trigger_threshold_a, trigger_threshold_b = self.core.logical_sensor_values(settings, trigger_threshold_1, trigger_threshold_2)
+            neutral_threshold_a, neutral_threshold_b = self.core.logical_sensor_values(settings, neutral_threshold_1, neutral_threshold_2)
             state, event = self.core.process_counter_sample(
                 settings,
                 state,
                 now,
                 sensor_a,
                 sensor_b,
-                threshold_a,
-                threshold_b,
+                trigger_threshold_a,
+                trigger_threshold_b,
+                neutral_threshold_a,
+                neutral_threshold_b,
             )
             event = event.copy()
             event["ignored_1"] = ignored_1
@@ -144,11 +152,12 @@ class LoadCounterCoreTests(unittest.TestCase):
             (0.0, 100, 100),
             (0.1, 70, 100),
             (0.3, 70, 70),
+            (0.36, 70, 70),
             (0.6, 100, 100),
         ])
 
         self.assertEqual(sum(event["counted"] for event in events), 1)
-        self.assertEqual(state["last_counted_at"], 0.3)
+        self.assertEqual(state["last_counted_at"], 0.36)
         self.assertIsNone(state["sensor1_triggered_at"])
 
     def test_wrong_direction_does_not_count_when_b_is_already_blocked(self):
@@ -156,6 +165,7 @@ class LoadCounterCoreTests(unittest.TestCase):
             (0.0, 100, 100),
             (0.1, 100, 70),
             (0.2, 70, 70),
+            (0.3, 70, 70),
             (0.4, 100, 100),
         ])
 
@@ -221,6 +231,7 @@ class LoadCounterCoreTests(unittest.TestCase):
             (0.1, 70, 100),
             (1.3, 70, 100),
             (1.4, 70, 70),
+            (1.46, 70, 70),
         ])
 
         self.assertEqual(sum(event["counted"] for event in events), 0)
@@ -232,17 +243,20 @@ class LoadCounterCoreTests(unittest.TestCase):
             (0.0, 100, 100),
             (0.1, 70, 100),
             (0.2, 70, 70),
+            (0.26, 70, 70),
             (0.4, 100, 100),
             (0.8, 70, 100),
             (0.9, 70, 70),
             (2.3, 100, 100),
-            (2.4, 70, 100),
-            (2.5, 70, 70),
+            (2.6, 100, 100),
+            (2.7, 70, 100),
+            (2.8, 70, 70),
+            (2.86, 70, 70),
         ])
 
         self.assertEqual(sum(event["counted"] for event in events), 2)
         self.assertTrue(any(event["cooldown_active"] for event in events))
-        self.assertEqual(state["last_counted_at"], 2.5)
+        self.assertEqual(state["last_counted_at"], 2.86)
 
     def test_saved_ba_order_counts_physical_sensor_2_then_sensor_1(self):
         events, state = self.run_trigger_stream(
@@ -250,23 +264,25 @@ class LoadCounterCoreTests(unittest.TestCase):
                 (0.0, 100, 100),
                 (0.1, 100, 70),
                 (0.3, 70, 70),
+                (0.36, 70, 70),
             ],
             settings=self.trigger_settings(sensor_order=self.core.SENSOR_ORDER_BA),
         )
 
         self.assertEqual(sum(event["counted"] for event in events), 1)
-        self.assertEqual(state["last_counted_at"], 0.3)
+        self.assertEqual(state["last_counted_at"], 0.36)
 
     def test_ignored_high_reading_does_not_replace_last_valid_distance(self):
         events, _ = self.run_trigger_stream([
             (0.0, 100, 100),
             (0.1, 70, 130),
             (0.2, 70, 70),
+            (0.26, 70, 70),
         ])
 
         self.assertTrue(events[1]["ignored_2"])
         self.assertFalse(events[1]["counted"])
-        self.assertTrue(events[2]["counted"])
+        self.assertTrue(events[3]["counted"])
 
 
 if __name__ == "__main__":

@@ -40,8 +40,10 @@ SETTINGS_STATE_PATH = os.path.join(COUNTER_STATE_DIR, "settings.json")
 DEVICE_NAME = "LoadCounter"
 LOADCOUNTER_PROGRAM_SERVICE = "loadcounter.service"
 
-MIN_THRESHOLD = 5
-MAX_THRESHOLD = 300
+MIN_TRIGGER_DISTANCE = 5
+MAX_TRIGGER_DISTANCE = 300
+MIN_NEUTRAL_MARGIN = 0
+MAX_NEUTRAL_MARGIN = 300
 MIN_TIMEOUT_MS = 100
 MAX_TIMEOUT_MS = 120_000
 MIN_COOLDOWN_MS = 0
@@ -142,7 +144,8 @@ def load_counter():
 
 def load_settings():
     defaults = {
-        "threshold_cm": 40,
+        "trigger_distance_cm": 40,
+        "neutral_margin_cm": 8,
         "timeout_ms": 20_000,
         "cooldown_ms": 10_000,
         "brightness_percent": 100,
@@ -161,13 +164,17 @@ def load_settings():
 
     settings = defaults.copy()
     for key, minimum, maximum in (
-        ("threshold_cm", MIN_THRESHOLD, MAX_THRESHOLD),
+        ("trigger_distance_cm", MIN_TRIGGER_DISTANCE, MAX_TRIGGER_DISTANCE),
+        ("neutral_margin_cm", MIN_NEUTRAL_MARGIN, MAX_NEUTRAL_MARGIN),
         ("timeout_ms", MIN_TIMEOUT_MS, MAX_TIMEOUT_MS),
         ("cooldown_ms", MIN_COOLDOWN_MS, MAX_COOLDOWN_MS),
         ("brightness_percent", MIN_BRIGHTNESS_PERCENT, MAX_BRIGHTNESS_PERCENT),
     ):
         try:
-            settings[key] = clamp(int(float(raw_settings.get(key, settings[key]))), minimum, maximum)
+            raw_value = raw_settings.get(key, settings[key])
+            if key == "trigger_distance_cm":
+                raw_value = raw_settings.get("trigger_distance_cm", raw_settings.get("threshold_cm", settings[key]))
+            settings[key] = clamp(int(float(raw_value)), minimum, maximum)
         except (TypeError, ValueError):
             pass
     settings["debug_mode"] = bool(raw_settings.get("debug_mode", settings["debug_mode"]))
@@ -222,10 +229,14 @@ def normalize_command(command_text):
     if command.startswith("counter:") or command.startswith("count:"):
         raw_count = command.split(":", 1)[1]
         return f"counter:{int_value(raw_count, 0, MAX_COUNTER, 'counter')}"
-    if command.startswith("threshold:") or command.startswith("threshold_cm:"):
-        raw_threshold = command.split(":", 1)[1]
-        threshold = int_value(raw_threshold, MIN_THRESHOLD, MAX_THRESHOLD, "threshold")
-        return f"threshold_cm:{threshold}"
+    if command.startswith(("trigger_distance:", "trigger_distance_cm:", "threshold:", "threshold_cm:")):
+        raw_distance = command.split(":", 1)[1]
+        trigger_distance = int_value(raw_distance, MIN_TRIGGER_DISTANCE, MAX_TRIGGER_DISTANCE, "trigger distance")
+        return f"trigger_distance_cm:{trigger_distance}"
+    if command.startswith(("neutral_margin:", "neutral_margin_cm:")):
+        raw_margin = command.split(":", 1)[1]
+        neutral_margin = int_value(raw_margin, MIN_NEUTRAL_MARGIN, MAX_NEUTRAL_MARGIN, "neutral margin")
+        return f"neutral_margin_cm:{neutral_margin}"
     if command.startswith("timeout_ms:"):
         raw_timeout = command.split(":", 1)[1]
         timeout_ms = int_value(raw_timeout, MIN_TIMEOUT_MS, MAX_TIMEOUT_MS, "timeout")
@@ -304,7 +315,7 @@ def default_learning_state():
         "phase": "idle",
         "status": "Idle",
         "countdown_seconds": 0,
-        "learned_threshold_cm": None,
+        "learned_trigger_distance_cm": None,
         "learned_timeout_ms": None,
         "learned_cooldown_ms": None,
         "learned_sensor_order": None,
@@ -354,7 +365,9 @@ def load_learning_state():
             learning[key] = max(0, int(learning[key]))
         except (TypeError, ValueError):
             learning[key] = defaults[key]
-    for key in ("learned_threshold_cm", "learned_timeout_ms", "learned_cooldown_ms"):
+    if raw_state.get("learned_trigger_distance_cm") is None and "learned_threshold_cm" in raw_state:
+        learning["learned_trigger_distance_cm"] = raw_state["learned_threshold_cm"]
+    for key in ("learned_trigger_distance_cm", "learned_timeout_ms", "learned_cooldown_ms"):
         if learning[key] is None:
             continue
         try:

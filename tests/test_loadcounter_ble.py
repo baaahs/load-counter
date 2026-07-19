@@ -48,7 +48,9 @@ class LoadCounterBleTests(unittest.TestCase):
             "learn": "learn_start",
             "stop_learning": "learn_stop",
             "counter:42": "counter:42",
-            "threshold:999": "threshold_cm:300",
+            "threshold:999": "trigger_distance_cm:300",
+            "trigger_distance_cm:42": "trigger_distance_cm:42",
+            "neutral_margin:12": "neutral_margin_cm:12",
             "timeout:1.5": "timeout_ms:1500",
             "cooldown_s:2": "cooldown_ms:2000",
             "brightness:0": "brightness:1",
@@ -93,7 +95,7 @@ class LoadCounterBleTests(unittest.TestCase):
                         "phase": "countdown",
                         "status": "Watch_now",
                         "countdown_seconds": "7",
-                        "learned_threshold_cm": "12",
+                        "learned_trigger_distance_cm": "12",
                         "learned_timeout_ms": "1400",
                         "learned_cooldown_ms": "2500",
                         "learned_sensor_order": "B/A",
@@ -107,7 +109,7 @@ class LoadCounterBleTests(unittest.TestCase):
         self.assertTrue(learning["active"])
         self.assertEqual(learning["round"], 3)
         self.assertEqual(learning["countdown_seconds"], 7)
-        self.assertEqual(learning["learned_threshold_cm"], 12)
+        self.assertEqual(learning["learned_trigger_distance_cm"], 12)
         self.assertEqual(learning["learned_sensor_order"], "B/A")
 
     def test_state_payload_reports_program_and_hides_learning_when_program_is_stopped(self):
@@ -115,7 +117,7 @@ class LoadCounterBleTests(unittest.TestCase):
             self.ble,
             "load_counter",
             return_value=5,
-        ), mock.patch.object(self.ble, "load_settings", return_value={"threshold_cm": 40}), mock.patch.object(
+        ), mock.patch.object(self.ble, "load_settings", return_value={"trigger_distance_cm": 40, "neutral_margin_cm": 8}), mock.patch.object(
             self.ble,
             "load_learning_state",
             return_value={"active": True},

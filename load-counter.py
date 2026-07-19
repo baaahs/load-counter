@@ -12,7 +12,8 @@ import serial
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-DEFAULT_THRESHOLD = 40  # cm
+DEFAULT_TRIGGER_DISTANCE = 40  # cm below calibrated neutral distance
+DEFAULT_NEUTRAL_MARGIN = 8  # cm below calibrated distance still considered neutral
 DEFAULT_TIMEOUT_MS = 20_000
 DEFAULT_COOLDOWN_MS = 10_000
 DEFAULT_BRIGHTNESS_PERCENT = 100
@@ -39,8 +40,10 @@ BOOT_FADE_FRAME_DELAY = 0.05
 DEFAULT_DEBUG_MODE = False
 STATUS_MESSAGE_SECONDS = 2.0
 COUNT_TRIGGER_FLASH_SECONDS = 1.0
-MIN_THRESHOLD = 5
-MAX_THRESHOLD = 300
+MIN_TRIGGER_DISTANCE = 5
+MAX_TRIGGER_DISTANCE = 300
+MIN_NEUTRAL_MARGIN = 0
+MAX_NEUTRAL_MARGIN = 300
 MIN_TIMEOUT_MS = 100
 MAX_TIMEOUT_MS = 120_000
 MIN_COOLDOWN_MS = 0
@@ -56,6 +59,8 @@ LEARNING_MIN_DROP_CM = 3.0
 LEARNING_THRESHOLD_MARGIN_CM = 2.0
 LEARNING_TIMEOUT_MARGIN_SECONDS = 1.0
 LEARNING_COOLDOWN_MARGIN_SECONDS = 1.5
+NEUTRAL_REARM_SECONDS = 0.25
+TRIGGER_DEBOUNCE_SECONDS = 0.05
 IGNORE_MARGIN_CM = 1
 CALIBRATION_CLUSTER_SPAN_CM = 5
 BDF_GLYPHS = {}
@@ -116,7 +121,8 @@ BOOT_LOGO_ROWS = [
 MENU_ITEMS = [
     {"id": "calibrate", "label": "CAL", "type": "action"},
     {"id": "counter_value", "label": "COUNT", "type": "int", "step": 1, "minimum": 0, "maximum": MAX_COUNTER},
-    {"id": "threshold_cm", "label": "THRESH (cm)", "type": "int", "step": 1, "minimum": MIN_THRESHOLD, "maximum": MAX_THRESHOLD},
+    {"id": "trigger_distance_cm", "label": "TRIG (cm)", "type": "int", "step": 1, "minimum": MIN_TRIGGER_DISTANCE, "maximum": MAX_TRIGGER_DISTANCE},
+    {"id": "neutral_margin_cm", "label": "NEUTR (cm)", "type": "int", "step": 1, "minimum": MIN_NEUTRAL_MARGIN, "maximum": MAX_NEUTRAL_MARGIN},
     {"id": "timeout_ms", "label": "TIME (s)", "type": "float", "step": 100, "minimum": MIN_TIMEOUT_MS, "maximum": MAX_TIMEOUT_MS},
     {"id": "cooldown_ms", "label": "COOLDWN (s)", "type": "float", "step": 100, "minimum": MIN_COOLDOWN_MS, "maximum": MAX_COOLDOWN_MS},
     {"id": "brightness_percent", "label": "BRIGHT", "type": "int", "step": 5, "minimum": MIN_BRIGHTNESS_PERCENT, "maximum": MAX_BRIGHTNESS_PERCENT},
@@ -238,7 +244,8 @@ def toggle_sensor_order(sensor_order):
 
 def default_settings():
     return {
-        "threshold_cm": DEFAULT_THRESHOLD,
+        "trigger_distance_cm": DEFAULT_TRIGGER_DISTANCE,
+        "neutral_margin_cm": DEFAULT_NEUTRAL_MARGIN,
         "timeout_ms": DEFAULT_TIMEOUT_MS,
         "cooldown_ms": DEFAULT_COOLDOWN_MS,
         "brightness_percent": DEFAULT_BRIGHTNESS_PERCENT,
@@ -255,7 +262,24 @@ def sanitize_settings(raw_settings):
         return settings
 
     try:
-        settings["threshold_cm"] = clamp(int(raw_settings.get("threshold_cm", DEFAULT_THRESHOLD)), MIN_THRESHOLD, MAX_THRESHOLD)
+        raw_trigger_distance = raw_settings.get(
+            "trigger_distance_cm",
+            raw_settings.get("threshold_cm", DEFAULT_TRIGGER_DISTANCE),
+        )
+        settings["trigger_distance_cm"] = clamp(
+            int(raw_trigger_distance),
+            MIN_TRIGGER_DISTANCE,
+            MAX_TRIGGER_DISTANCE,
+        )
+    except (TypeError, ValueError):
+        pass
+
+    try:
+        settings["neutral_margin_cm"] = clamp(
+            int(raw_settings.get("neutral_margin_cm", DEFAULT_NEUTRAL_MARGIN)),
+            MIN_NEUTRAL_MARGIN,
+            MAX_NEUTRAL_MARGIN,
+        )
     except (TypeError, ValueError):
         pass
 
@@ -663,13 +687,13 @@ def analyze_learning_round(learning, settings):
     noise_floor = max(pre_noise_1, pre_noise_2) + LEARNING_THRESHOLD_MARGIN_CM
     event_ceiling = min_drop - LEARNING_THRESHOLD_MARGIN_CM
     if event_ceiling >= noise_floor:
-        threshold_cm = round((noise_floor + event_ceiling) / 2)
+        trigger_distance_cm = round((noise_floor + event_ceiling) / 2)
     else:
-        threshold_cm = round(min_drop * 0.6)
-    threshold_cm = clamp(threshold_cm, MIN_THRESHOLD, MAX_THRESHOLD)
+        trigger_distance_cm = round(min_drop * 0.6)
+    trigger_distance_cm = clamp(trigger_distance_cm, MIN_TRIGGER_DISTANCE, MAX_TRIGGER_DISTANCE)
 
-    low_level_1 = float(baseline_1) - threshold_cm
-    low_level_2 = float(baseline_2) - threshold_cm
+    low_level_1 = float(baseline_1) - trigger_distance_cm
+    low_level_2 = float(baseline_2) - trigger_distance_cm
     low_samples = [
         sample["t"]
         for sample in samples
@@ -695,7 +719,7 @@ def analyze_learning_round(learning, settings):
     return {
         "round": learning.get("round") or 0,
         "sensor_order": learned_order,
-        "threshold_cm": threshold_cm,
+        "trigger_distance_cm": trigger_distance_cm,
         "timeout_ms": timeout_ms,
         "cooldown_ms": cooldown_ms,
         "base_distance_1_cm": round(baseline_1),
@@ -731,7 +755,7 @@ def update_learning(learning, settings, now, raw_distance1, raw_distance2):
     result, status = analyze_learning_round(learning, settings)
     learning["last_result"] = result
     if result is not None:
-        settings["threshold_cm"] = result["threshold_cm"]
+        settings["trigger_distance_cm"] = result["trigger_distance_cm"]
         settings["timeout_ms"] = result["timeout_ms"]
         settings["cooldown_ms"] = result["cooldown_ms"]
         settings["sensor_order"] = result["sensor_order"]
@@ -759,7 +783,7 @@ def learning_payload(learning, now):
         "phase": learning.get("phase") or ("countdown" if active else "idle"),
         "status": learning.get("status") or ("Countdown" if active else "Idle"),
         "countdown_seconds": countdown,
-        "learned_threshold_cm": last_result.get("threshold_cm"),
+        "learned_trigger_distance_cm": last_result.get("trigger_distance_cm"),
         "learned_timeout_ms": last_result.get("timeout_ms"),
         "learned_cooldown_ms": last_result.get("cooldown_ms"),
         "learned_sensor_order": last_result.get("sensor_order"),
@@ -827,8 +851,10 @@ def menu_value_text(item, draft_settings, draft_counter):
     item_id = item["id"]
     if item_id == "counter_value":
         return str(draft_counter)
-    if item_id == "threshold_cm":
-        return str(draft_settings["threshold_cm"])
+    if item_id == "trigger_distance_cm":
+        return str(draft_settings["trigger_distance_cm"])
+    if item_id == "neutral_margin_cm":
+        return str(draft_settings["neutral_margin_cm"])
     if item_id == "timeout_ms":
         return format_timeout_seconds(draft_settings["timeout_ms"])
     if item_id == "cooldown_ms":
@@ -1342,57 +1368,136 @@ def fountain(
     )
 
 
-def default_trigger_state(sensor1_triggered_at=None, sensor2_ready_after_sensor1=False, last_counted_at=None):
+def default_trigger_state(
+    sensor1_triggered_at=None,
+    sensor2_ready_after_sensor1=False,
+    last_counted_at=None,
+    mode=None,
+    neutral_since=None,
+    sensor_b_triggered_since=None,
+    sensor_b_neutral_after_sensor_a=False,
+):
+    if mode is None:
+        mode = "sensor_a" if sensor1_triggered_at is not None else "armed"
     return {
+        "mode": mode,
         "sensor1_triggered_at": sensor1_triggered_at,
         "sensor2_ready_after_sensor1": sensor2_ready_after_sensor1,
         "last_counted_at": last_counted_at,
+        "neutral_since": neutral_since,
+        "sensor_b_triggered_since": sensor_b_triggered_since,
+        "sensor_b_neutral_after_sensor_a": sensor_b_neutral_after_sensor_a,
     }
 
 
-def process_counter_sample(settings, trigger_state, now, sensor_a_distance, sensor_b_distance, sensor_a_threshold, sensor_b_threshold):
+def process_counter_sample(
+    settings,
+    trigger_state,
+    now,
+    sensor_a_distance,
+    sensor_b_distance,
+    sensor_a_trigger_threshold,
+    sensor_b_trigger_threshold,
+    sensor_a_neutral_threshold,
+    sensor_b_neutral_threshold,
+):
     state = default_trigger_state(
         sensor1_triggered_at=trigger_state.get("sensor1_triggered_at"),
         sensor2_ready_after_sensor1=bool(trigger_state.get("sensor2_ready_after_sensor1")),
         last_counted_at=trigger_state.get("last_counted_at"),
+        mode=trigger_state.get("mode"),
+        neutral_since=trigger_state.get("neutral_since"),
+        sensor_b_triggered_since=trigger_state.get("sensor_b_triggered_since"),
+        sensor_b_neutral_after_sensor_a=bool(trigger_state.get("sensor_b_neutral_after_sensor_a")),
     )
     event = {
         "counted": False,
         "cooldown_active": False,
         "sensor_a_started": False,
         "timed_out": False,
+        "rearmed": False,
     }
+
+    sensor_a_triggered = sensor_a_distance is not None and sensor_a_distance < sensor_a_trigger_threshold
+    sensor_b_triggered = sensor_b_distance is not None and sensor_b_distance < sensor_b_trigger_threshold
+    sensor_a_neutral = sensor_a_distance is not None and sensor_a_distance >= sensor_a_neutral_threshold
+    sensor_b_neutral = sensor_b_distance is not None and sensor_b_distance >= sensor_b_neutral_threshold
+    both_neutral = sensor_a_neutral and sensor_b_neutral
+    timeout_seconds = settings["timeout_ms"] / 1000.0
+    cooldown_seconds = settings["cooldown_ms"] / 1000.0
+
+    def wait_for_neutral():
+        state["mode"] = "waiting_neutral"
+        state["sensor1_triggered_at"] = None
+        state["sensor2_ready_after_sensor1"] = False
+        state["sensor_b_triggered_since"] = None
+        state["sensor_b_neutral_after_sensor_a"] = False
+
+    def update_neutral_rearm():
+        if not both_neutral:
+            state["neutral_since"] = None
+            return False
+        if state["neutral_since"] is None:
+            state["neutral_since"] = now
+        if now - state["neutral_since"] >= NEUTRAL_REARM_SECONDS:
+            state["mode"] = "armed"
+            state["neutral_since"] = None
+            event["rearmed"] = True
+            return True
+        return False
 
     cooldown_active = (
         state["last_counted_at"] is not None
-        and now - state["last_counted_at"] < settings["cooldown_ms"] / 1000.0
+        and now - state["last_counted_at"] < cooldown_seconds
     )
     event["cooldown_active"] = cooldown_active
 
     if cooldown_active:
-        state["sensor1_triggered_at"] = None
-        state["sensor2_ready_after_sensor1"] = False
+        wait_for_neutral()
         return state, event
 
-    if sensor_a_distance is not None and sensor_a_distance < sensor_a_threshold:
-        if state["sensor1_triggered_at"] is None:
-            state["sensor1_triggered_at"] = now
-            state["sensor2_ready_after_sensor1"] = sensor_b_distance is not None and sensor_b_distance >= sensor_b_threshold
-            event["sensor_a_started"] = True
+    if state["mode"] in ("cooldown", "waiting_neutral"):
+        if not update_neutral_rearm():
+            return state, event
 
-    if state["sensor1_triggered_at"] is not None:
-        if not state["sensor2_ready_after_sensor1"] and sensor_b_distance is not None and sensor_b_distance >= sensor_b_threshold:
-            state["sensor2_ready_after_sensor1"] = True
-
-        if now - state["sensor1_triggered_at"] > settings["timeout_ms"] / 1000.0:
-            state["sensor1_triggered_at"] = None
-            state["sensor2_ready_after_sensor1"] = False
+    if state["mode"] == "sensor_a":
+        if now - state["sensor1_triggered_at"] > timeout_seconds:
+            wait_for_neutral()
             event["timed_out"] = True
-        elif state["sensor2_ready_after_sensor1"] and sensor_b_distance is not None and sensor_b_distance < sensor_b_threshold:
-            state["last_counted_at"] = now
-            state["sensor1_triggered_at"] = None
-            state["sensor2_ready_after_sensor1"] = False
-            event["counted"] = True
+            return state, event
+
+        if sensor_b_neutral:
+            state["sensor_b_neutral_after_sensor_a"] = True
+            state["sensor2_ready_after_sensor1"] = True
+            state["sensor_b_triggered_since"] = None
+
+        if sensor_b_triggered and state["sensor_b_neutral_after_sensor_a"]:
+            if state["sensor_b_triggered_since"] is None:
+                state["sensor_b_triggered_since"] = now
+            if now - state["sensor_b_triggered_since"] >= TRIGGER_DEBOUNCE_SECONDS:
+                state["last_counted_at"] = now
+                wait_for_neutral()
+                state["mode"] = "cooldown"
+                event["counted"] = True
+        else:
+            state["sensor_b_triggered_since"] = None
+
+        return state, event
+
+    if state["mode"] != "armed":
+        wait_for_neutral()
+        return state, event
+
+    if sensor_a_triggered and sensor_b_neutral:
+        state["mode"] = "sensor_a"
+        state["sensor1_triggered_at"] = now
+        state["sensor2_ready_after_sensor1"] = True
+        state["sensor_b_neutral_after_sensor_a"] = True
+        state["sensor_b_triggered_since"] = None
+        state["neutral_since"] = None
+        event["sensor_a_started"] = True
+    elif sensor_a_triggered or sensor_b_triggered:
+        wait_for_neutral()
 
     return state, event
 
@@ -1403,14 +1508,22 @@ def apply_command(command, settings, counter):
     counter_changed = False
     status_message = None
 
-    if command == "threshold_up":
-        settings["threshold_cm"] = clamp(settings["threshold_cm"] + 1, MIN_THRESHOLD, MAX_THRESHOLD)
+    if command in ("threshold_up", "trigger_distance_up"):
+        settings["trigger_distance_cm"] = clamp(
+            settings["trigger_distance_cm"] + 1,
+            MIN_TRIGGER_DISTANCE,
+            MAX_TRIGGER_DISTANCE,
+        )
         settings_changed = True
-        status_message = f"THR {settings['threshold_cm']}"
-    elif command == "threshold_down":
-        settings["threshold_cm"] = clamp(settings["threshold_cm"] - 1, MIN_THRESHOLD, MAX_THRESHOLD)
+        status_message = f"TRIG {settings['trigger_distance_cm']}"
+    elif command in ("threshold_down", "trigger_distance_down"):
+        settings["trigger_distance_cm"] = clamp(
+            settings["trigger_distance_cm"] - 1,
+            MIN_TRIGGER_DISTANCE,
+            MAX_TRIGGER_DISTANCE,
+        )
         settings_changed = True
-        status_message = f"THR {settings['threshold_cm']}"
+        status_message = f"TRIG {settings['trigger_distance_cm']}"
     elif command == "debug_toggle":
         settings["debug_mode"] = not settings["debug_mode"]
         settings_changed = True
@@ -1503,10 +1616,25 @@ def run_calibration(settings, matrix, offscreen_canvas, debug_font, us100_1, us1
 
 
 def apply_direct_setting_command(command, target_settings):
-    threshold_cm = parse_direct_int(command, ("threshold", "threshold_cm"), MIN_THRESHOLD, MAX_THRESHOLD)
-    if threshold_cm is not None:
-        target_settings["threshold_cm"] = threshold_cm
-        return True, True, f"THR {target_settings['threshold_cm']}"
+    trigger_distance_cm = parse_direct_int(
+        command,
+        ("trigger_distance", "trigger_distance_cm", "threshold", "threshold_cm"),
+        MIN_TRIGGER_DISTANCE,
+        MAX_TRIGGER_DISTANCE,
+    )
+    if trigger_distance_cm is not None:
+        target_settings["trigger_distance_cm"] = trigger_distance_cm
+        return True, True, f"TRIG {target_settings['trigger_distance_cm']}"
+
+    neutral_margin_cm = parse_direct_int(
+        command,
+        ("neutral_margin", "neutral_margin_cm"),
+        MIN_NEUTRAL_MARGIN,
+        MAX_NEUTRAL_MARGIN,
+    )
+    if neutral_margin_cm is not None:
+        target_settings["neutral_margin_cm"] = neutral_margin_cm
+        return True, True, f"NEUT {target_settings['neutral_margin_cm']}"
 
     timeout_ms = parse_direct_int(command, ("timeout_ms",), MIN_TIMEOUT_MS, MAX_TIMEOUT_MS)
     if timeout_ms is not None:
@@ -1674,6 +1802,7 @@ print(f"Loaded counter={counter} from {COUNTER_STATE_PATH}", flush=True)
 print(f"Loaded settings={settings} from {SETTINGS_STATE_PATH}", flush=True)
 sensor1_triggered_at = None
 sensor2_ready_after_sensor1 = False
+counter_trigger_state = default_trigger_state()
 distance1 = None
 distance2 = None
 distance1_ignored = False
@@ -1752,6 +1881,7 @@ while True:
             sensor1_triggered_at = None
             sensor2_ready_after_sensor1 = False
             last_counted_at = None
+            counter_trigger_state = default_trigger_state()
             direct_status = f"COUNT {counter}"
         elif command == "reset_defaults":
             handled_direct_command = True
@@ -1827,6 +1957,7 @@ while True:
             sensor1_triggered_at = None
             sensor2_ready_after_sensor1 = False
             last_counted_at = None
+            counter_trigger_state = default_trigger_state()
             begin_learning_round(learning, now)
             direct_status = "LEARN"
         elif command == "learn_stop":
@@ -1835,6 +1966,7 @@ while True:
             sensor1_triggered_at = None
             sensor2_ready_after_sensor1 = False
             last_counted_at = None
+            counter_trigger_state = default_trigger_state()
             direct_status = "LEARN OFF"
         else:
             handled_direct_command, direct_settings_changed, direct_status = apply_direct_setting_command(command, settings)
@@ -2044,6 +2176,7 @@ while True:
                 sensor1_triggered_at = None
                 sensor2_ready_after_sensor1 = False
                 last_counted_at = None
+                counter_trigger_state = default_trigger_state()
         else:
             if command == "enter":
                 menu_open = True
@@ -2068,12 +2201,15 @@ while True:
                     log_event("counter_reset", old_count=old_counter, new_count=updated_counter, source="keyboard")
                     sensor1_triggered_at = None
                     sensor2_ready_after_sensor1 = False
+                    last_counted_at = None
+                    counter_trigger_state = default_trigger_state()
                     print("Counter reset from keyboard", flush=True)
             elif command == "count_reset":
                 counter = reset_counter_with_log(counter, "keyboard")
                 sensor1_triggered_at = None
                 sensor2_ready_after_sensor1 = False
                 last_counted_at = None
+                counter_trigger_state = default_trigger_state()
 
     active_settings = draft_settings if menu_open else settings
     current_brightness_percent = apply_matrix_brightness(matrix, active_settings, current_brightness_percent)
@@ -2095,10 +2231,13 @@ while True:
 
     base_1 = active_settings["base_distance_1_cm"] if active_settings["base_distance_1_cm"] is not None else round(filtered_distance1 or raw_distance1)
     base_2 = active_settings["base_distance_2_cm"] if active_settings["base_distance_2_cm"] is not None else round(filtered_distance2 or raw_distance2)
-    threshold_1 = max(1, base_1 - active_settings["threshold_cm"])
-    threshold_2 = max(1, base_2 - active_settings["threshold_cm"])
+    trigger_threshold_1 = max(1, base_1 - active_settings["trigger_distance_cm"])
+    trigger_threshold_2 = max(1, base_2 - active_settings["trigger_distance_cm"])
+    neutral_threshold_1 = max(1, base_1 - active_settings["neutral_margin_cm"])
+    neutral_threshold_2 = max(1, base_2 - active_settings["neutral_margin_cm"])
     trigger_distance1, trigger_distance2 = logical_sensor_values(active_settings, filtered_distance1, filtered_distance2)
-    trigger_threshold1, trigger_threshold2 = logical_sensor_values(active_settings, threshold_1, threshold_2)
+    trigger_threshold1, trigger_threshold2 = logical_sensor_values(active_settings, trigger_threshold_1, trigger_threshold_2)
+    neutral_threshold1, neutral_threshold2 = logical_sensor_values(active_settings, neutral_threshold_1, neutral_threshold_2)
     cooldown_active = (
         last_counted_at is not None
         and now - last_counted_at < active_settings["cooldown_ms"] / 1000.0
@@ -2112,6 +2251,7 @@ while True:
         sensor1_triggered_at = None
         sensor2_ready_after_sensor1 = False
         last_counted_at = None
+        counter_trigger_state = default_trigger_state()
         active_settings = draft_settings if menu_open else settings
         display_distance1, display_distance2 = logical_sensor_values(active_settings, distance1, distance2)
         display_distance1_ignored, display_distance2_ignored = logical_sensor_values(
@@ -2123,13 +2263,16 @@ while True:
     else:
         trigger_state, trigger_event = process_counter_sample(
             active_settings,
-            default_trigger_state(sensor1_triggered_at, sensor2_ready_after_sensor1, last_counted_at),
+            counter_trigger_state,
             now,
             trigger_distance1,
             trigger_distance2,
             trigger_threshold1,
             trigger_threshold2,
+            neutral_threshold1,
+            neutral_threshold2,
         )
+        counter_trigger_state = trigger_state
         sensor1_triggered_at = trigger_state["sensor1_triggered_at"]
         sensor2_ready_after_sensor1 = trigger_state["sensor2_ready_after_sensor1"]
         last_counted_at = trigger_state["last_counted_at"]
@@ -2151,8 +2294,10 @@ while True:
                 sensor_order=active_settings["sensor_order"],
                 sensor_a_distance_cm=trigger_distance1,
                 sensor_b_distance_cm=trigger_distance2,
-                sensor_a_threshold_cm=trigger_threshold1,
-                sensor_b_threshold_cm=trigger_threshold2,
+                sensor_a_trigger_threshold_cm=trigger_threshold1,
+                sensor_b_trigger_threshold_cm=trigger_threshold2,
+                sensor_a_neutral_threshold_cm=neutral_threshold1,
+                sensor_b_neutral_threshold_cm=neutral_threshold2,
                 raw_sensor_1_distance_cm=distance1,
                 raw_sensor_2_distance_cm=distance2,
             )
