@@ -164,20 +164,30 @@ class LoadCounterCoreTests(unittest.TestCase):
         self.assertIsNone(state["last_counted_at"])
 
     def test_constantly_triggered_sensors_do_not_increment_count(self):
+        settings = self.trigger_settings()
+        settings["cooldown_ms"] = 250
         events, state = self.run_trigger_stream(
             [
                 (0.2, 70, 70),
-                (0.4, 70, 70),
-                (2.5, 70, 70),
-                (2.7, 70, 70),
+                (0.3, 70, 70),
+                (0.5, 70, 70),
+                (0.6, 70, 70),
+                (0.8, 70, 70),
+                (0.9, 70, 70),
+                (1.1, 70, 70),
+                (1.2, 70, 70),
+                (1.4, 70, 70),
+                (1.5, 70, 70),
             ],
+            settings=settings,
             initial_state=self.core.default_trigger_state(
                 sensor1_triggered_at=0.0,
                 sensor2_ready_after_sensor1=True,
             ),
         )
 
-        self.assertEqual(sum(event["counted"] for event in events), 0)
+        counted_events = sum(event["counted"] for event in events)
+        self.assertEqual(counted_events, 0, f"stuck sensors produced {counted_events} counts")
         self.assertIsNone(state["last_counted_at"])
 
     def test_sensor_b_must_trigger_before_timeout(self):
