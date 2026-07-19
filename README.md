@@ -96,6 +96,12 @@ cd ~/loadcounter
 ./env/bin/python test-ultrasonic.sensors.py
 ```
 
+### Run unit tests
+
+```
+python3 -m unittest discover -s tests -v
+```
+
 ## Files
 
 | File | Description |
