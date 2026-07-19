@@ -101,9 +101,9 @@ class LoadCounterCoreTests(unittest.TestCase):
         })
         return settings
 
-    def run_trigger_stream(self, samples, settings=None):
+    def run_trigger_stream(self, samples, settings=None, initial_state=None):
         settings = settings or self.trigger_settings()
-        state = self.core.default_trigger_state()
+        state = initial_state or self.core.default_trigger_state()
         last_valid_1 = None
         last_valid_2 = None
         events = []
@@ -161,6 +161,23 @@ class LoadCounterCoreTests(unittest.TestCase):
 
         self.assertEqual(sum(event["counted"] for event in events), 0)
         self.assertFalse(any(event["timed_out"] for event in events))
+        self.assertIsNone(state["last_counted_at"])
+
+    def test_constantly_triggered_sensors_do_not_increment_count(self):
+        events, state = self.run_trigger_stream(
+            [
+                (0.2, 70, 70),
+                (0.4, 70, 70),
+                (2.5, 70, 70),
+                (2.7, 70, 70),
+            ],
+            initial_state=self.core.default_trigger_state(
+                sensor1_triggered_at=0.0,
+                sensor2_ready_after_sensor1=True,
+            ),
+        )
+
+        self.assertEqual(sum(event["counted"] for event in events), 0)
         self.assertIsNone(state["last_counted_at"])
 
     def test_sensor_b_must_trigger_before_timeout(self):
