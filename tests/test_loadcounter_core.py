@@ -225,6 +225,116 @@ class LoadCounterCoreTests(unittest.TestCase):
         self.assertEqual(counted_events, 0, f"sustained occupancy produced {counted_events} counts")
         self.assertIsNone(state["last_counted_at"])
 
+    def test_trigger_distance_controls_how_far_sensor_must_drop(self):
+        strict_settings = self.trigger_settings()
+        strict_settings["trigger_distance_cm"] = 20
+        strict_events, strict_state = self.run_trigger_stream(
+            [
+                (0.0, 100, 100),
+                (0.1, 85, 100),
+                (0.2, 85, 70),
+                (0.26, 85, 70),
+            ],
+            settings=strict_settings,
+        )
+
+        sensitive_settings = self.trigger_settings()
+        sensitive_settings["trigger_distance_cm"] = 10
+        sensitive_events, sensitive_state = self.run_trigger_stream(
+            [
+                (0.0, 100, 100),
+                (0.1, 85, 100),
+                (0.2, 85, 85),
+                (0.26, 85, 85),
+            ],
+            settings=sensitive_settings,
+        )
+
+        self.assertEqual(sum(event["counted"] for event in strict_events), 0)
+        self.assertIsNone(strict_state["last_counted_at"])
+        self.assertEqual(sum(event["counted"] for event in sensitive_events), 1)
+        self.assertEqual(sensitive_state["last_counted_at"], 0.26)
+
+    def test_neutral_margin_requires_full_neutral_before_rearming(self):
+        settings = self.trigger_settings()
+        settings["cooldown_ms"] = 100
+        events, state = self.run_trigger_stream(
+            [
+                (0.0, 100, 100),
+                (0.1, 70, 100),
+                (0.2, 70, 70),
+                (0.26, 70, 70),
+                (0.4, 90, 90),
+                (0.8, 90, 90),
+                (0.9, 70, 100),
+                (1.0, 70, 70),
+                (1.3, 100, 100),
+                (1.6, 100, 100),
+                (1.7, 70, 100),
+                (1.8, 70, 70),
+                (1.86, 70, 70),
+            ],
+            settings=settings,
+        )
+
+        self.assertEqual(sum(event["counted"] for event in events), 2)
+        self.assertFalse(any(event["counted"] for event in events[4:8]))
+        self.assertTrue(events[9]["rearmed"])
+        self.assertEqual(state["last_counted_at"], 1.86)
+
+    def test_larger_neutral_margin_rearms_when_sensors_are_near_baseline(self):
+        settings = self.trigger_settings()
+        settings["cooldown_ms"] = 100
+        settings["neutral_margin_cm"] = 20
+        events, state = self.run_trigger_stream(
+            [
+                (0.0, 100, 100),
+                (0.1, 70, 100),
+                (0.2, 70, 70),
+                (0.26, 70, 70),
+                (0.4, 90, 90),
+                (0.7, 90, 90),
+                (0.8, 70, 100),
+                (0.9, 70, 70),
+                (0.96, 70, 70),
+            ],
+            settings=settings,
+        )
+
+        self.assertEqual(sum(event["counted"] for event in events), 2)
+        self.assertTrue(events[5]["rearmed"])
+        self.assertEqual(state["last_counted_at"], 0.96)
+
+    def test_sensor_b_must_stay_triggered_through_debounce_window(self):
+        events, state = self.run_trigger_stream([
+            (0.0, 100, 100),
+            (0.1, 70, 100),
+            (0.2, 70, 70),
+            (0.23, 70, 100),
+            (0.4, 70, 70),
+            (0.46, 70, 70),
+        ])
+
+        self.assertFalse(events[2]["counted"])
+        self.assertEqual(sum(event["counted"] for event in events), 1)
+        self.assertEqual(state["last_counted_at"], 0.46)
+
+    def test_sensor_b_must_be_neutral_after_sensor_a_before_counting(self):
+        events, state = self.run_trigger_stream(
+            [
+                (0.2, 70, 70),
+                (0.3, 70, 70),
+                (0.5, 70, 70),
+                (0.7, 70, 70),
+                (1.2, 70, 70),
+            ],
+            initial_state=self.core.default_trigger_state(sensor1_triggered_at=0.0),
+        )
+
+        self.assertEqual(sum(event["counted"] for event in events), 0)
+        self.assertTrue(any(event["timed_out"] for event in events))
+        self.assertIsNone(state["last_counted_at"])
+
     def test_sensor_b_must_trigger_before_timeout(self):
         events, state = self.run_trigger_stream([
             (0.0, 100, 100),
