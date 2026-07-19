@@ -1342,6 +1342,61 @@ def fountain(
     )
 
 
+def default_trigger_state(sensor1_triggered_at=None, sensor2_ready_after_sensor1=False, last_counted_at=None):
+    return {
+        "sensor1_triggered_at": sensor1_triggered_at,
+        "sensor2_ready_after_sensor1": sensor2_ready_after_sensor1,
+        "last_counted_at": last_counted_at,
+    }
+
+
+def process_counter_sample(settings, trigger_state, now, sensor_a_distance, sensor_b_distance, sensor_a_threshold, sensor_b_threshold):
+    state = default_trigger_state(
+        sensor1_triggered_at=trigger_state.get("sensor1_triggered_at"),
+        sensor2_ready_after_sensor1=bool(trigger_state.get("sensor2_ready_after_sensor1")),
+        last_counted_at=trigger_state.get("last_counted_at"),
+    )
+    event = {
+        "counted": False,
+        "cooldown_active": False,
+        "sensor_a_started": False,
+        "timed_out": False,
+    }
+
+    cooldown_active = (
+        state["last_counted_at"] is not None
+        and now - state["last_counted_at"] < settings["cooldown_ms"] / 1000.0
+    )
+    event["cooldown_active"] = cooldown_active
+
+    if cooldown_active:
+        state["sensor1_triggered_at"] = None
+        state["sensor2_ready_after_sensor1"] = False
+        return state, event
+
+    if sensor_a_distance is not None and sensor_a_distance < sensor_a_threshold:
+        if state["sensor1_triggered_at"] is None:
+            state["sensor1_triggered_at"] = now
+            state["sensor2_ready_after_sensor1"] = sensor_b_distance is not None and sensor_b_distance >= sensor_b_threshold
+            event["sensor_a_started"] = True
+
+    if state["sensor1_triggered_at"] is not None:
+        if not state["sensor2_ready_after_sensor1"] and sensor_b_distance is not None and sensor_b_distance >= sensor_b_threshold:
+            state["sensor2_ready_after_sensor1"] = True
+
+        if now - state["sensor1_triggered_at"] > settings["timeout_ms"] / 1000.0:
+            state["sensor1_triggered_at"] = None
+            state["sensor2_ready_after_sensor1"] = False
+            event["timed_out"] = True
+        elif state["sensor2_ready_after_sensor1"] and sensor_b_distance is not None and sensor_b_distance < sensor_b_threshold:
+            state["last_counted_at"] = now
+            state["sensor1_triggered_at"] = None
+            state["sensor2_ready_after_sensor1"] = False
+            event["counted"] = True
+
+    return state, event
+
+
 def apply_command(command, settings, counter):
     updated_counter = counter
     settings_changed = False
@@ -2066,58 +2121,58 @@ while True:
         )
         cooldown_active = False
     else:
-        if cooldown_active:
+        trigger_state, trigger_event = process_counter_sample(
+            active_settings,
+            default_trigger_state(sensor1_triggered_at, sensor2_ready_after_sensor1, last_counted_at),
+            now,
+            trigger_distance1,
+            trigger_distance2,
+            trigger_threshold1,
+            trigger_threshold2,
+        )
+        sensor1_triggered_at = trigger_state["sensor1_triggered_at"]
+        sensor2_ready_after_sensor1 = trigger_state["sensor2_ready_after_sensor1"]
+        last_counted_at = trigger_state["last_counted_at"]
+        cooldown_active = trigger_event["cooldown_active"]
+
+        if trigger_event["sensor_a_started"]:
+            print(f"Sensor A triggered: {trigger_distance1} cm", flush=True)
+        if trigger_event["timed_out"]:
+            print(f"Timeout - sensor B did not trigger within {active_settings['timeout_ms']}ms", flush=True)
+        if trigger_event["counted"]:
+            old_count = counter
+            counter += 1
+            save_counter(COUNTER_STATE_PATH, counter)
+            log_event(
+                "counter_triggered",
+                old_count=old_count,
+                new_count=counter,
+                direction="a_to_b",
+                sensor_order=active_settings["sensor_order"],
+                sensor_a_distance_cm=trigger_distance1,
+                sensor_b_distance_cm=trigger_distance2,
+                sensor_a_threshold_cm=trigger_threshold1,
+                sensor_b_threshold_cm=trigger_threshold2,
+                raw_sensor_1_distance_cm=distance1,
+                raw_sensor_2_distance_cm=distance2,
+            )
+            print(f"Count! #{counter} (A->B)", flush=True)
             sensor1_triggered_at = None
             sensor2_ready_after_sensor1 = False
-        elif trigger_distance1 is not None and trigger_distance1 < trigger_threshold1:
-            if sensor1_triggered_at is None:
-                sensor1_triggered_at = time.time()
-                sensor2_ready_after_sensor1 = trigger_distance2 is not None and trigger_distance2 >= trigger_threshold2
-                print(f"Sensor A triggered: {trigger_distance1} cm", flush=True)
-
-        if sensor1_triggered_at is not None:
-            if not sensor2_ready_after_sensor1 and trigger_distance2 is not None and trigger_distance2 >= trigger_threshold2:
-                sensor2_ready_after_sensor1 = True
-
-            if time.time() - sensor1_triggered_at > active_settings["timeout_ms"] / 1000.0:
-                print(f"Timeout - sensor B did not trigger within {active_settings['timeout_ms']}ms", flush=True)
-                sensor1_triggered_at = None
-                sensor2_ready_after_sensor1 = False
-            elif sensor2_ready_after_sensor1 and trigger_distance2 is not None and trigger_distance2 < trigger_threshold2:
-                old_count = counter
-                counter += 1
-                last_counted_at = time.time()
-                save_counter(COUNTER_STATE_PATH, counter)
-                log_event(
-                    "counter_triggered",
-                    old_count=old_count,
-                    new_count=counter,
-                    direction="a_to_b",
-                    sensor_order=active_settings["sensor_order"],
-                    sensor_a_distance_cm=trigger_distance1,
-                    sensor_b_distance_cm=trigger_distance2,
-                    sensor_a_threshold_cm=trigger_threshold1,
-                    sensor_b_threshold_cm=trigger_threshold2,
-                    raw_sensor_1_distance_cm=distance1,
-                    raw_sensor_2_distance_cm=distance2,
+            if not menu_open:
+                offscreen_canvas = fountain(
+                    matrix,
+                    offscreen_canvas,
+                    font,
+                    big_font,
+                    debug_font,
+                    old_count,
+                    counter,
+                    distance1=display_distance1,
+                    distance2=display_distance2,
+                    debug_mode=active_settings["debug_mode"],
+                    status_message=status_message,
                 )
-                print(f"Count! #{counter} (A->B)", flush=True)
-                sensor1_triggered_at = None
-                sensor2_ready_after_sensor1 = False
-                if not menu_open:
-                    offscreen_canvas = fountain(
-                        matrix,
-                        offscreen_canvas,
-                        font,
-                        big_font,
-                        debug_font,
-                        old_count,
-                        counter,
-                        distance1=display_distance1,
-                        distance2=display_distance2,
-                        debug_mode=active_settings["debug_mode"],
-                        status_message=status_message,
-                    )
 
     print(
         f"d1={distance1:.0f}cm{' ignored' if distance1_ignored else ''} "
