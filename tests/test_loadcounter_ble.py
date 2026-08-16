@@ -60,6 +60,7 @@ class LoadCounterBleTests(unittest.TestCase):
             "sensors:ba": "sensor_order:B/A",
             "loadcounter_off": "loadcounter_stop",
             "program_on": "loadcounter_start",
+            "history:12": "history:12",
         }
 
         for raw_command, normalized in cases.items():
@@ -86,6 +87,53 @@ class LoadCounterBleTests(unittest.TestCase):
         self.assertEqual(payload["command"], "menu_open")
         self.assertIn("id", payload)
         self.assertIn("created_at", payload)
+
+    def test_load_history_events_compacts_and_returns_newest_first(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            history_path = os.path.join(temp_dir, "events.jsonl")
+            with open(history_path, "w", encoding="utf-8") as handle:
+                handle.write(json.dumps({
+                    "timestamp": "2026-08-15T10:00:00-07:00",
+                    "event": "counter_triggered",
+                    "old_count": 4,
+                    "new_count": 5,
+                    "details": {"source": "sensors", "raw_sensor_1_distance_cm": 80},
+                }) + "\n")
+                handle.write("not-json\n")
+                handle.write(json.dumps({
+                    "timestamp": "2026-08-15T10:01:00-07:00",
+                    "event": "counter_reset",
+                    "old_count": 5,
+                    "new_count": 0,
+                    "details": {"source": "iphone"},
+                }) + "\n")
+
+            events = self.ble.load_history_events(history_path)
+
+        self.assertEqual([event["k"] for event in events], ["r", "c"])
+        self.assertEqual(events[0]["n"], 0)
+        self.assertEqual(events[1]["s"], "sensors")
+        self.assertNotIn("raw_sensor_1_distance_cm", events[1])
+
+    def test_history_pages_fit_limit_and_cover_every_event(self):
+        events = [
+            {"t": 1_700_000_000 + index, "k": "c", "o": index, "n": index + 1, "s": "sensors"}
+            for index in range(25)
+        ]
+        received = []
+        cursor = 0
+        while True:
+            page = self.ble.history_page_payload(events, cursor, maximum_bytes=220)
+            encoded = json.dumps(page, separators=(",", ":"), sort_keys=True).encode("utf-8")
+            self.assertLessEqual(len(encoded), 220)
+            self.assertEqual(page["cursor"], cursor)
+            received.extend(page["events"])
+            if page["done"]:
+                break
+            self.assertGreater(page["next_cursor"], cursor)
+            cursor = page["next_cursor"]
+
+        self.assertEqual(received, events)
 
     def test_load_learning_state_sanitizes_saved_values(self):
         with tempfile.TemporaryDirectory() as temp_dir:

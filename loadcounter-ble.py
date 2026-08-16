@@ -5,6 +5,7 @@ import os
 import signal
 import subprocess
 import time
+from datetime import datetime
 
 from dbus_next import Variant
 from dbus_next.aio import MessageBus
@@ -25,11 +26,13 @@ APP_PATH = "/com/loadcounter/ble"
 SERVICE_PATH = f"{APP_PATH}/service0"
 COMMAND_CHARACTERISTIC_PATH = f"{SERVICE_PATH}/char0"
 STATUS_CHARACTERISTIC_PATH = f"{SERVICE_PATH}/char1"
+HISTORY_CHARACTERISTIC_PATH = f"{SERVICE_PATH}/char2"
 ADVERTISEMENT_PATH = f"{APP_PATH}/advertisement0"
 
 LOADCOUNTER_SERVICE_UUID = "8fd2f4f8-a7b2-4b2d-a59f-4b2c64850a95"
 COMMAND_CHARACTERISTIC_UUID = "8fd2f4f9-a7b2-4b2d-a59f-4b2c64850a95"
 STATUS_CHARACTERISTIC_UUID = "8fd2f4fa-a7b2-4b2d-a59f-4b2c64850a95"
+HISTORY_CHARACTERISTIC_UUID = "8fd2f4fb-a7b2-4b2d-a59f-4b2c64850a95"
 
 COMMAND_STATE_DIR = "/var/tmp/loadcounter"
 KEYBOARD_COMMAND_PATH = os.path.join(COMMAND_STATE_DIR, "keyboard-command.json")
@@ -37,6 +40,7 @@ LEARNING_STATE_PATH = os.path.join(COMMAND_STATE_DIR, "learning-state.json")
 COUNTER_STATE_DIR = "/var/lib/loadcounter"
 COUNTER_STATE_PATH = os.path.join(COUNTER_STATE_DIR, "counter-state.txt")
 SETTINGS_STATE_PATH = os.path.join(COUNTER_STATE_DIR, "settings.json")
+EVENT_LOG_PATH = os.path.join(COUNTER_STATE_DIR, "events.jsonl")
 DEVICE_NAME = "LoadCounter"
 LOADCOUNTER_PROGRAM_SERVICE = "loadcounter.service"
 
@@ -51,6 +55,8 @@ MAX_COOLDOWN_MS = 120_000
 MIN_BRIGHTNESS_PERCENT = 1
 MAX_BRIGHTNESS_PERCENT = 100
 MAX_COUNTER = 999999
+MAX_HISTORY_CURSOR = 10_000_000
+MAX_HISTORY_PAGE_BYTES = 480
 SENSOR_ORDER_AB = "A/B"
 SENSOR_ORDER_BA = "B/A"
 
@@ -224,6 +230,9 @@ def normalize_command(command_text):
         return command
     if command in SERVICE_COMMANDS:
         return command
+    if command.startswith("history:"):
+        raw_cursor = command.split(":", 1)[1]
+        return f"history:{int_value(raw_cursor, 0, MAX_HISTORY_CURSOR, 'history cursor')}"
     if command.isdigit() and len(command) == 1:
         return f"digit:{command}"
     if command.startswith("digit:") and command[6:].isdigit() and len(command[6:]) == 1:
@@ -402,6 +411,88 @@ def bytes_for_text(text):
     return text.encode("utf-8")
 
 
+def compact_history_event(raw_event):
+    if not isinstance(raw_event, dict):
+        return None
+    timestamp = raw_event.get("timestamp")
+    event_name = raw_event.get("event")
+    if not isinstance(timestamp, str) or not isinstance(event_name, str):
+        return None
+    try:
+        epoch_seconds = round(datetime.fromisoformat(timestamp).timestamp())
+    except (TypeError, ValueError):
+        return None
+
+    event_codes = {
+        "counter_triggered": "c",
+        "manual_number_changed": "m",
+        "counter_reset": "r",
+        "learning_event": "l",
+    }
+    compact = {
+        "t": epoch_seconds,
+        "k": event_codes.get(event_name, event_name[:32]),
+    }
+    for source_key, compact_key in (("old_count", "o"), ("new_count", "n")):
+        value = raw_event.get(source_key)
+        if value is not None:
+            try:
+                compact[compact_key] = int(value)
+            except (TypeError, ValueError):
+                pass
+    details = raw_event.get("details")
+    if isinstance(details, dict) and isinstance(details.get("source"), str):
+        compact["s"] = details["source"][:24]
+    return compact
+
+
+def load_history_events(path=EVENT_LOG_PATH):
+    events = []
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            for line in handle:
+                try:
+                    compact = compact_history_event(json.loads(line))
+                except (ValueError, TypeError):
+                    continue
+                if compact is not None:
+                    events.append(compact)
+    except (FileNotFoundError, OSError):
+        return []
+    events.reverse()
+    return events
+
+
+def history_page_payload(events, cursor, maximum_bytes=MAX_HISTORY_PAGE_BYTES):
+    cursor = clamp(int(cursor), 0, len(events))
+    page_events = []
+    next_cursor = cursor
+    while next_cursor < len(events):
+        candidate_events = page_events + [events[next_cursor]]
+        candidate = {
+            "cursor": cursor,
+            "next_cursor": next_cursor + 1,
+            "done": next_cursor + 1 >= len(events),
+            "total": len(events),
+            "events": candidate_events,
+        }
+        encoded = json.dumps(candidate, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        if page_events and len(encoded) > maximum_bytes:
+            break
+        page_events = candidate_events
+        next_cursor += 1
+        if len(encoded) >= maximum_bytes:
+            break
+
+    return {
+        "cursor": cursor,
+        "next_cursor": next_cursor,
+        "done": next_cursor >= len(events),
+        "total": len(events),
+        "events": page_events,
+    }
+
+
 def state_payload(status_text):
     program_status = service_status(LOADCOUNTER_PROGRAM_SERVICE)
     program_active = program_status == "active"
@@ -462,10 +553,11 @@ class LoadCounterService(ServiceInterface):
 
 
 class CommandCharacteristic(ServiceInterface):
-    def __init__(self, status):
+    def __init__(self, status, history):
         super().__init__(GATT_CHRC_IFACE)
         self.path = COMMAND_CHARACTERISTIC_PATH
         self.status = status
+        self.history = history
 
     @dbus_property(access=PropertyAccess.READ)
     def UUID(self) -> "s":
@@ -484,7 +576,9 @@ class CommandCharacteristic(ServiceInterface):
         try:
             text = bytes(value).decode("utf-8")
             command = normalize_command(text)
-            if command in SERVICE_COMMANDS:
+            if command.startswith("history:"):
+                self.history.set_cursor(int(command.split(":", 1)[1]))
+            elif command in SERVICE_COMMANDS:
                 apply_service_command(command)
             else:
                 write_command(command)
@@ -530,6 +624,45 @@ class StatusCharacteristic(ServiceInterface):
     @method()
     def ReadValue(self, options: "a{sv}") -> "ay":
         return bytes_for_text(json.dumps(state_payload(self.text), separators=(",", ":"), sort_keys=True))
+
+    def get_properties(self):
+        return {
+            GATT_CHRC_IFACE: {
+                "UUID": Variant("s", self.UUID),
+                "Service": Variant("o", self.Service),
+                "Flags": Variant("as", self.Flags),
+            }
+        }
+
+
+class HistoryCharacteristic(ServiceInterface):
+    def __init__(self):
+        super().__init__(GATT_CHRC_IFACE)
+        self.path = HISTORY_CHARACTERISTIC_PATH
+        self.cursor = 0
+        self.events = []
+
+    def set_cursor(self, cursor):
+        self.cursor = max(0, int(cursor))
+        if self.cursor == 0:
+            self.events = load_history_events()
+
+    @dbus_property(access=PropertyAccess.READ)
+    def UUID(self) -> "s":
+        return HISTORY_CHARACTERISTIC_UUID
+
+    @dbus_property(access=PropertyAccess.READ)
+    def Service(self) -> "o":
+        return SERVICE_PATH
+
+    @dbus_property(access=PropertyAccess.READ)
+    def Flags(self) -> "as":
+        return ["read"]
+
+    @method()
+    def ReadValue(self, options: "a{sv}") -> "ay":
+        page = history_page_payload(self.events, self.cursor)
+        return bytes_for_text(json.dumps(page, separators=(",", ":"), sort_keys=True))
 
     def get_properties(self):
         return {
@@ -601,16 +734,18 @@ async def main():
     app = Application()
     service = LoadCounterService()
     status = StatusCharacteristic()
-    command = CommandCharacteristic(status)
+    history = HistoryCharacteristic()
+    command = CommandCharacteristic(status, history)
     advertisement = Advertisement()
 
-    for obj in (service, command, status):
+    for obj in (service, command, status, history):
         app.add(obj)
 
     bus.export(APP_PATH, app)
     bus.export(service.path, service)
     bus.export(command.path, command)
     bus.export(status.path, status)
+    bus.export(history.path, history)
     bus.export(advertisement.path, advertisement)
 
     gatt_manager = await get_interface(bus, adapter_path, GATT_MANAGER_IFACE)

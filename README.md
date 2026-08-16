@@ -58,6 +58,9 @@ Count events are appended as JSON Lines on the Pi:
 Logged event names are `counter_triggered`, `manual_number_changed`, and
 `counter_reset`.
 
+The iPhone app's History screen reads this same file through a paginated BLE
+characteristic. It does not create or maintain a second event log on the Pi.
+
 ### Control from your Mac keyboard
 
 Run the remote keyboard controller from this repo:

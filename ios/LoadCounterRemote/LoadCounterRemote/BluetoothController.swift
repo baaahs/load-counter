@@ -81,17 +81,25 @@ final class BluetoothController: NSObject, ObservableObject {
     private let serviceUUID = CBUUID(string: "8fd2f4f8-a7b2-4b2d-a59f-4b2c64850a95")
     private let commandCharacteristicUUID = CBUUID(string: "8fd2f4f9-a7b2-4b2d-a59f-4b2c64850a95")
     private let statusCharacteristicUUID = CBUUID(string: "8fd2f4fa-a7b2-4b2d-a59f-4b2c64850a95")
+    private let historyCharacteristicUUID = CBUUID(string: "8fd2f4fb-a7b2-4b2d-a59f-4b2c64850a95")
 
     @Published var stateText = "Bluetooth starting"
     @Published var lastMessage = "Ready"
     @Published var isReady = false
     @Published var isScanning = false
     @Published var deviceState: LoadCounterDeviceState?
+    @Published var historyEvents: [LoadCounterHistoryEvent] = []
+    @Published var isLoadingHistory = false
+    @Published var historyProgress = 0.0
+    @Published var historyError: String?
+    @Published var lastHistorySync: Date?
 
     private var central: CBCentralManager!
     private var peripheral: CBPeripheral?
     private var commandCharacteristic: CBCharacteristic?
     private var statusCharacteristic: CBCharacteristic?
+    private var historyCharacteristic: CBCharacteristic?
+    private var pendingHistoryCursor: Int?
     private var shouldReconnect = true
 
     override init() {
@@ -110,6 +118,8 @@ final class BluetoothController: NSObject, ObservableObject {
         isReady = false
         commandCharacteristic = nil
         statusCharacteristic = nil
+        historyCharacteristic = nil
+        stopHistorySync(error: nil)
         stateText = "Scanning"
         central.scanForPeripherals(
             withServices: [serviceUUID],
@@ -137,7 +147,69 @@ final class BluetoothController: NSObject, ObservableObject {
         peripheral.readValue(for: statusCharacteristic)
     }
 
+    var historyAvailable: Bool {
+        historyCharacteristic != nil
+    }
+
+    func refreshHistory() {
+        guard isReady, historyCharacteristic != nil else {
+            historyError = "History is unavailable on this device"
+            return
+        }
+        historyEvents = []
+        historyError = nil
+        historyProgress = 0
+        isLoadingHistory = true
+        requestHistoryPage(cursor: 0)
+    }
+
+    private func requestHistoryPage(cursor: Int) {
+        guard let peripheral, let characteristic = commandCharacteristic else {
+            stopHistorySync(error: "Bluetooth disconnected")
+            return
+        }
+        guard let data = "history:\(cursor)".data(using: .utf8) else {
+            stopHistorySync(error: "Could not create history request")
+            return
+        }
+        pendingHistoryCursor = cursor
+        peripheral.writeValue(data, for: characteristic, type: .withResponse)
+    }
+
+    private func receiveHistoryPage(_ data: Data) {
+        do {
+            let page = try JSONDecoder().decode(LoadCounterHistoryPage.self, from: data)
+            guard page.cursor == pendingHistoryCursor else {
+                stopHistorySync(error: "History pages arrived out of order")
+                return
+            }
+            historyEvents.append(contentsOf: page.events)
+            historyProgress = page.total == 0 ? 1 : min(1, Double(historyEvents.count) / Double(page.total))
+            if page.done {
+                lastHistorySync = Date()
+                stopHistorySync(error: nil)
+            } else if page.nextCursor > page.cursor {
+                requestHistoryPage(cursor: page.nextCursor)
+            } else {
+                stopHistorySync(error: "History transfer stopped unexpectedly")
+            }
+        } catch {
+            stopHistorySync(error: "Could not read history data")
+        }
+    }
+
+    private func stopHistorySync(error: String?) {
+        isLoadingHistory = false
+        pendingHistoryCursor = nil
+        if let error {
+            historyError = error
+        }
+    }
+
     func send(_ command: String, feedback: String? = nil) {
+        if isLoadingHistory {
+            stopHistorySync(error: "History sync was interrupted")
+        }
         guard let peripheral, let characteristic = commandCharacteristic else {
             lastMessage = "Not connected"
             return
@@ -178,6 +250,9 @@ final class BluetoothController: NSObject, ObservableObject {
         }
         if command.starts(with: "counter:") {
             return "Count updated"
+        }
+        if command.starts(with: "history:") {
+            return "History syncing"
         }
 
         switch command {
@@ -309,6 +384,8 @@ extension BluetoothController: CBCentralManagerDelegate {
         isReady = false
         commandCharacteristic = nil
         statusCharacteristic = nil
+        historyCharacteristic = nil
+        stopHistorySync(error: nil)
         if shouldReconnect {
             scan()
         }
@@ -318,6 +395,8 @@ extension BluetoothController: CBCentralManagerDelegate {
         isReady = false
         commandCharacteristic = nil
         statusCharacteristic = nil
+        historyCharacteristic = nil
+        stopHistorySync(error: "Connection lost")
         stateText = error == nil ? "Disconnected" : "Connection lost"
         if shouldReconnect {
             scan()
@@ -333,7 +412,10 @@ extension BluetoothController: CBPeripheralDelegate {
         }
 
         for service in peripheral.services ?? [] where service.uuid == serviceUUID {
-            peripheral.discoverCharacteristics([commandCharacteristicUUID, statusCharacteristicUUID], for: service)
+            peripheral.discoverCharacteristics(
+                [commandCharacteristicUUID, statusCharacteristicUUID, historyCharacteristicUUID],
+                for: service
+            )
         }
     }
 
@@ -348,6 +430,8 @@ extension BluetoothController: CBPeripheralDelegate {
                 commandCharacteristic = characteristic
             } else if characteristic.uuid == statusCharacteristicUUID {
                 statusCharacteristic = characteristic
+            } else if characteristic.uuid == historyCharacteristicUUID {
+                historyCharacteristic = characteristic
             }
         }
 
@@ -369,7 +453,16 @@ extension BluetoothController: CBPeripheralDelegate {
 
     func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
         if let error {
-            lastMessage = error.localizedDescription
+            if pendingHistoryCursor != nil {
+                stopHistorySync(error: error.localizedDescription)
+            } else {
+                lastMessage = error.localizedDescription
+            }
+            return
+        }
+
+        if pendingHistoryCursor != nil, let historyCharacteristic {
+            peripheral.readValue(for: historyCharacteristic)
             return
         }
 
@@ -383,9 +476,13 @@ extension BluetoothController: CBPeripheralDelegate {
             lastMessage = error.localizedDescription
             return
         }
-        guard characteristic.uuid == statusCharacteristicUUID, let data = characteristic.value else {
+        guard let data = characteristic.value else {
             return
         }
-        updateDeviceState(from: data)
+        if characteristic.uuid == statusCharacteristicUUID {
+            updateDeviceState(from: data)
+        } else if characteristic.uuid == historyCharacteristicUUID {
+            receiveHistoryPage(data)
+        }
     }
 }

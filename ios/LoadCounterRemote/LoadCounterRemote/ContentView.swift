@@ -41,6 +41,8 @@ struct ContentView: View {
                     .disabled(!bluetooth.isReady)
                 counterSection
                     .disabled(!controlsAreEnabled)
+                historySection
+                    .disabled(!bluetooth.isReady)
                 learningSection
                     .disabled(!controlsAreEnabled)
                 sensorsSection
@@ -157,6 +159,26 @@ struct ContentView: View {
                 bluetooth.send("play_animation", feedback: "Playing animation")
             } label: {
                 Label("Play Count Animation", systemImage: "play.circle")
+            }
+        }
+    }
+
+    private var historySection: some View {
+        Section {
+            NavigationLink {
+                HistoryView(bluetooth: bluetooth)
+            } label: {
+                Label {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("History and Reports")
+                        Text(historySubtitle)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                } icon: {
+                    Image(systemName: "chart.xyaxis.line")
+                        .foregroundStyle(.purple)
+                }
             }
         }
     }
@@ -474,6 +496,16 @@ struct ContentView: View {
             return "Ready for remote control"
         }
         return bluetooth.lastMessage
+    }
+
+    private var historySubtitle: String {
+        if bluetooth.isLoadingHistory {
+            return "Syncing from device"
+        }
+        if !bluetooth.historyEvents.isEmpty {
+            return "\(bluetooth.historyEvents.count) events available"
+        }
+        return "Charts, stats, and PDF export"
     }
 
     private var counterDisplayText: String {

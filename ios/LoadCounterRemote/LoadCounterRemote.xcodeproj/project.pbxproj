@@ -10,6 +10,9 @@
 		100000000000000000000001 /* LoadCounterRemoteApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000011 /* LoadCounterRemoteApp.swift */; };
 		100000000000000000000002 /* BluetoothController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000012 /* BluetoothController.swift */; };
 		100000000000000000000003 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000013 /* ContentView.swift */; };
+		200000000000000000000001 /* HistoryModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000011 /* HistoryModels.swift */; };
+		200000000000000000000002 /* HistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000012 /* HistoryView.swift */; };
+		200000000000000000000003 /* HistoryPDFExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000013 /* HistoryPDFExporter.swift */; };
 		100000000000000000000014 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000015 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
@@ -19,6 +22,9 @@
 		100000000000000000000012 /* BluetoothController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BluetoothController.swift; sourceTree = "<group>"; };
 		100000000000000000000013 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		100000000000000000000015 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		200000000000000000000011 /* HistoryModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryModels.swift; sourceTree = "<group>"; };
+		200000000000000000000012 /* HistoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryView.swift; sourceTree = "<group>"; };
+		200000000000000000000013 /* HistoryPDFExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryPDFExporter.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -46,6 +52,9 @@
 				100000000000000000000011 /* LoadCounterRemoteApp.swift */,
 				100000000000000000000012 /* BluetoothController.swift */,
 				100000000000000000000013 /* ContentView.swift */,
+				200000000000000000000011 /* HistoryModels.swift */,
+				200000000000000000000012 /* HistoryView.swift */,
+				200000000000000000000013 /* HistoryPDFExporter.swift */,
 				100000000000000000000015 /* Assets.xcassets */,
 			);
 			path = LoadCounterRemote;
@@ -132,6 +141,9 @@
 				100000000000000000000001 /* LoadCounterRemoteApp.swift in Sources */,
 				100000000000000000000002 /* BluetoothController.swift in Sources */,
 				100000000000000000000003 /* ContentView.swift in Sources */,
+				200000000000000000000001 /* HistoryModels.swift in Sources */,
+				200000000000000000000002 /* HistoryView.swift in Sources */,
+				200000000000000000000003 /* HistoryPDFExporter.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
