@@ -30,10 +30,10 @@ enum HistoryPDFExporter {
 
     static func create(
         events: [LoadCounterHistoryEvent],
-        buckets: [HistoryBucket],
         statistics: HistoryStatistics,
         range: HistoryRange,
-        grouping: HistoryGrouping,
+        startDate: Date,
+        endDate: Date,
         valueMode: HistoryValueMode
     ) throws -> URL {
         let formatter = DateFormatter()
@@ -41,15 +41,42 @@ enum HistoryPDFExporter {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("LoadCounter-History-\(formatter.string(from: Date())).pdf")
         let renderer = UIGraphicsPDFRenderer(bounds: pageRect)
+        let resolution = HistoryAnalytics.automaticResolution(
+            startDate: startDate,
+            endDate: endDate,
+            availableWidth: Double(pageRect.width - margin * 2 - 28)
+        )
+        let intervalBuckets = HistoryAnalytics.buckets(
+            for: events,
+            resolution: resolution,
+            startDate: startDate,
+            endDate: endDate
+        )
+        let activityBuckets = valueMode == .cumulative
+            ? HistoryAnalytics.cumulativeBuckets(intervalBuckets)
+            : intervalBuckets
+        let counterChangeBuckets = HistoryAnalytics.counterChangeBuckets(
+            for: events,
+            resolution: resolution,
+            startDate: startDate,
+            endDate: endDate
+        )
+        let counterValueBuckets = HistoryAnalytics.counterValueBuckets(
+            for: events,
+            resolution: resolution,
+            startDate: startDate,
+            endDate: endDate
+        )
 
         try renderer.writePDF(to: url) { context in
             drawDashboardPage(
                 context: context,
                 events: events,
-                buckets: buckets,
+                buckets: activityBuckets,
                 statistics: statistics,
                 range: range,
-                grouping: grouping,
+                counterChangeBuckets: counterChangeBuckets,
+                counterValueBuckets: counterValueBuckets,
                 valueMode: valueMode
             )
             drawEventPages(context: context, events: events)
@@ -63,7 +90,8 @@ enum HistoryPDFExporter {
         buckets: [HistoryBucket],
         statistics: HistoryStatistics,
         range: HistoryRange,
-        grouping: HistoryGrouping,
+        counterChangeBuckets: [HistoryBucket],
+        counterValueBuckets: [HistoryBucket],
         valueMode: HistoryValueMode
     ) {
         context.beginPage()
@@ -75,7 +103,7 @@ enum HistoryPDFExporter {
 
         drawText("LoadCounter History", in: CGRect(x: margin, y: 38, width: 420, height: 34), font: .systemFont(ofSize: 27, weight: .bold), color: ink)
         drawText(
-            "\(range.rawValue) · \(grouping.rawValue) · \(valueMode.rawValue) · Generated \(Date().formatted(date: .abbreviated, time: .shortened))",
+            "\(range.rawValue) · \(valueMode.rawValue) · Generated \(Date().formatted(date: .abbreviated, time: .shortened))",
             in: CGRect(x: margin, y: 76, width: 520, height: 20),
             font: .systemFont(ofSize: 11, weight: .regular),
             color: secondaryInk
@@ -99,11 +127,17 @@ enum HistoryPDFExporter {
 
         if valueMode == .cumulative {
             drawText("Counter Value", in: CGRect(x: margin, y: 510, width: 260, height: 24), font: .systemFont(ofSize: 17, weight: .semibold), color: ink)
-            drawCounterChart(HistoryAnalytics.counterSeries(events), rect: CGRect(x: margin, y: 542, width: pageRect.width - margin * 2, height: 155), context: cg)
+            drawBucketChart(
+                counterValueBuckets,
+                usesLine: true,
+                color: indigo,
+                rect: CGRect(x: margin, y: 542, width: pageRect.width - margin * 2, height: 155),
+                context: cg
+            )
         } else {
             drawText("Counter Change", in: CGRect(x: margin, y: 510, width: 260, height: 24), font: .systemFont(ofSize: 17, weight: .semibold), color: ink)
             drawBucketChart(
-                HistoryAnalytics.counterChangeBuckets(for: events, grouping: grouping),
+                counterChangeBuckets,
                 usesLine: false,
                 color: indigo,
                 rect: CGRect(x: margin, y: 542, width: pageRect.width - margin * 2, height: 155),
@@ -229,28 +263,6 @@ enum HistoryPDFExporter {
             path.lineCapStyle = .round
             path.stroke()
         }
-    }
-
-    private static func drawCounterChart(_ events: [LoadCounterHistoryEvent], rect: CGRect, context: CGContext) {
-        drawChartBackground(rect, context: context)
-        let values = events.compactMap(\.newCount)
-        guard !values.isEmpty, let minimum = values.min(), let maximum = values.max() else {
-            drawEmptyChartText("No counter values", rect: rect)
-            return
-        }
-        let chart = rect.insetBy(dx: 14, dy: 14)
-        let spread = max(maximum - minimum, 1)
-        let path = UIBezierPath()
-        for (index, value) in values.enumerated() {
-            let x = chart.minX + (values.count == 1 ? chart.width / 2 : CGFloat(index) * chart.width / CGFloat(values.count - 1))
-            let y = chart.maxY - chart.height * CGFloat(value - minimum) / CGFloat(spread)
-            index == 0 ? path.move(to: CGPoint(x: x, y: y)) : path.addLine(to: CGPoint(x: x, y: y))
-        }
-        indigo.setStroke()
-        path.lineWidth = 3
-        path.lineJoinStyle = .round
-        path.lineCapStyle = .round
-        path.stroke()
     }
 
     private static func drawChartBackground(_ rect: CGRect, context: CGContext) {

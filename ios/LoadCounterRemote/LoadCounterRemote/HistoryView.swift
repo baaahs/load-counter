@@ -5,7 +5,6 @@ struct HistoryView: View {
     @ObservedObject var bluetooth: BluetoothController
 
     @State private var range: HistoryRange = .sevenDays
-    @State private var grouping: HistoryGrouping = .hour
     @State private var valueMode: HistoryValueMode = .interval
     @State private var includedKinds = Set(HistoryEventKind.allCases)
     @State private var exportedReport: ExportedHistoryReport?
@@ -20,7 +19,13 @@ struct HistoryView: View {
     }
 
     private var intervalBuckets: [HistoryBucket] {
-        HistoryAnalytics.buckets(for: filteredEvents, grouping: grouping)
+        let window = chartWindow
+        return HistoryAnalytics.buckets(
+            for: filteredEvents,
+            resolution: window.resolution,
+            startDate: window.startDate,
+            endDate: window.endDate
+        )
     }
 
     private var activityBuckets: [HistoryBucket] {
@@ -34,12 +39,35 @@ struct HistoryView: View {
         HistoryAnalytics.statistics(for: filteredEvents, buckets: intervalBuckets)
     }
 
-    private var counterSeries: [LoadCounterHistoryEvent] {
-        HistoryAnalytics.counterSeries(filteredEvents)
+    private var counterValueBuckets: [HistoryBucket] {
+        let window = chartWindow
+        return HistoryAnalytics.counterValueBuckets(
+            for: filteredEvents,
+            resolution: window.resolution,
+            startDate: window.startDate,
+            endDate: window.endDate
+        )
     }
 
     private var counterChangeBuckets: [HistoryBucket] {
-        HistoryAnalytics.counterChangeBuckets(for: filteredEvents, grouping: grouping)
+        let window = chartWindow
+        return HistoryAnalytics.counterChangeBuckets(
+            for: filteredEvents,
+            resolution: window.resolution,
+            startDate: window.startDate,
+            endDate: window.endDate
+        )
+    }
+
+    private var chartWindow: (startDate: Date, endDate: Date, resolution: HistoryResolution) {
+        let endDate = Date()
+        let startDate = HistoryAnalytics.chartStartDate(for: bluetooth.historyEvents, range: range, now: endDate)
+        let plotWidth = Double(max(UIScreen.main.bounds.width - 72, 160))
+        return (
+            startDate,
+            endDate,
+            HistoryAnalytics.automaticResolution(startDate: startDate, endDate: endDate, availableWidth: plotWidth)
+        )
     }
 
     var body: some View {
@@ -199,30 +227,18 @@ struct HistoryView: View {
             }
             .pickerStyle(.segmented)
 
-            VStack(spacing: 0) {
-                customizationMenu(
-                    title: "Grouping",
-                    systemImage: "calendar",
-                    options: HistoryGrouping.allCases,
-                    selection: $grouping
-                )
-
-                Divider()
-                    .padding(.leading, 48)
-
-                Menu {
-                    ForEach(HistoryEventKind.allCases) { kind in
-                        Toggle(kind.shortTitle, isOn: kindBinding(kind))
-                    }
-                } label: {
-                    settingsMenuLabel(
-                        title: "Event Types",
-                        value: eventFilterSummary,
-                        systemImage: "line.3.horizontal.decrease.circle"
-                    )
+            Menu {
+                ForEach(HistoryEventKind.allCases) { kind in
+                    Toggle(kind.shortTitle, isOn: kindBinding(kind))
                 }
-                .buttonStyle(.plain)
+            } label: {
+                settingsMenuLabel(
+                    title: "Event Types",
+                    value: eventFilterSummary,
+                    systemImage: "line.3.horizontal.decrease.circle"
+                )
             }
+            .buttonStyle(.plain)
             .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 8))
         }
         .padding()
@@ -255,7 +271,7 @@ struct HistoryView: View {
 
     private var activitySection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            sectionTitle("Activity", detail: "\(valueMode.rawValue) · \(grouping.rawValue)")
+            sectionTitle("Activity", detail: valueMode.rawValue)
             if activityBuckets.isEmpty {
                 emptyChart("No automatic counts in this view")
             } else {
@@ -288,26 +304,19 @@ struct HistoryView: View {
 
     private var counterSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            sectionTitle("Counter", detail: valueMode == .cumulative ? "Recorded value" : "Net change · \(grouping.rawValue)")
+            sectionTitle("Counter", detail: valueMode == .cumulative ? "Recorded value" : "Net change")
             if valueMode == .cumulative {
-                if counterSeries.isEmpty {
+                if counterValueBuckets.isEmpty {
                     emptyChart("No counter values in this view")
                 } else {
-                    Chart(counterSeries) { event in
+                    Chart(counterValueBuckets) { bucket in
                         LineMark(
-                            x: .value("Time", event.date),
-                            y: .value("Count", event.newCount ?? 0)
+                            x: .value("Time", bucket.date),
+                            y: .value("Count", bucket.count)
                         )
                         .foregroundStyle(.indigo)
                         .lineStyle(StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
                         .interpolationMethod(.linear)
-
-                        PointMark(
-                            x: .value("Time", event.date),
-                            y: .value("Count", event.newCount ?? 0)
-                        )
-                        .foregroundStyle(color(for: event.kind))
-                        .symbolSize(counterSeries.count > 80 ? 12 : 34)
                     }
                     .chartYAxis { AxisMarks(position: .leading) }
                     .chartXAxis { AxisMarks(values: .automatic(desiredCount: 5)) }
@@ -423,28 +432,6 @@ struct HistoryView: View {
             .frame(maxWidth: .infinity, minHeight: 180)
     }
 
-    private func customizationMenu<Option: Identifiable & RawRepresentable & Hashable>(
-        title: String,
-        systemImage: String,
-        options: [Option],
-        selection: Binding<Option>
-    ) -> some View where Option.RawValue == String {
-        Menu {
-            Picker(title, selection: selection) {
-                ForEach(options) { option in
-                    Text(option.rawValue).tag(option)
-                }
-            }
-        } label: {
-            settingsMenuLabel(
-                title: title,
-                value: selection.wrappedValue.rawValue,
-                systemImage: systemImage
-            )
-        }
-        .buttonStyle(.plain)
-    }
-
     private func settingsMenuLabel(title: String, value: String, systemImage: String) -> some View {
         HStack(spacing: 12) {
             Image(systemName: systemImage)
@@ -504,22 +491,20 @@ struct HistoryView: View {
     }
 
     private func bucketDateText(_ date: Date) -> String {
-        switch grouping {
-        case .minute, .hour:
+        if chartWindow.resolution.interval < 86_400 {
             return date.formatted(date: .abbreviated, time: .shortened)
-        case .day, .week:
-            return date.formatted(date: .abbreviated, time: .omitted)
         }
+        return date.formatted(date: .abbreviated, time: .omitted)
     }
 
     private func exportPDF() {
         do {
             let url = try HistoryPDFExporter.create(
                 events: filteredEvents,
-                buckets: activityBuckets,
                 statistics: statistics,
                 range: range,
-                grouping: grouping,
+                startDate: chartWindow.startDate,
+                endDate: chartWindow.endDate,
                 valueMode: valueMode
             )
             exportedReport = ExportedHistoryReport(url: url)
