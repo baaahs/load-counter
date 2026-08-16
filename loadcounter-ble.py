@@ -73,6 +73,10 @@ KEYBOARD_COMMANDS = {
     "menu_open",
     "menu_cancel",
     "learn_start",
+    "learn_calibrate",
+    "learn_count",
+    "learn_end",
+    "learn_cancel",
     "learn_stop",
 }
 
@@ -204,8 +208,14 @@ def normalize_command(command_text):
         return "menu_cancel"
     if command in ("learn", "start_learning", "learning_start"):
         return "learn_start"
-    if command in ("stop_learning", "learning_stop"):
-        return "learn_stop"
+    if command in ("stop_learning", "learning_stop", "learn_stop"):
+        return "learn_end"
+    if command in ("learning_calibrate", "calibrate_learning"):
+        return "learn_calibrate"
+    if command in ("learning_count", "mark_learning_event"):
+        return "learn_count"
+    if command in ("cancel_learning", "learning_cancel"):
+        return "learn_cancel"
     if command in ("loadcounter_on", "load_counter_on", "program_on", "counter_on"):
         return "loadcounter_start"
     if command in ("loadcounter_off", "load_counter_off", "program_off", "counter_off"):
@@ -311,14 +321,16 @@ def save_idle_learning_state():
 def default_learning_state():
     return {
         "active": False,
-        "round": 0,
+        "event_count": 0,
         "phase": "idle",
         "status": "Idle",
-        "countdown_seconds": 0,
-        "learned_trigger_distance_cm": None,
-        "learned_timeout_ms": None,
-        "learned_cooldown_ms": None,
-        "learned_sensor_order": None,
+        "trigger_distance_cm": None,
+        "neutral_margin_cm": None,
+        "timeout_ms": None,
+        "cooldown_ms": None,
+        "sensor_order": None,
+        "base_distance_1_cm": None,
+        "base_distance_2_cm": None,
     }
 
 
@@ -360,22 +372,27 @@ def load_learning_state():
         if key in raw_state:
             learning[key] = raw_state[key]
     learning["active"] = bool(learning["active"])
-    for key in ("round", "countdown_seconds"):
+    for key in ("event_count",):
         try:
             learning[key] = max(0, int(learning[key]))
         except (TypeError, ValueError):
             learning[key] = defaults[key]
-    if raw_state.get("learned_trigger_distance_cm") is None and "learned_threshold_cm" in raw_state:
-        learning["learned_trigger_distance_cm"] = raw_state["learned_threshold_cm"]
-    for key in ("learned_trigger_distance_cm", "learned_timeout_ms", "learned_cooldown_ms"):
+    for key in (
+        "trigger_distance_cm",
+        "neutral_margin_cm",
+        "timeout_ms",
+        "cooldown_ms",
+        "base_distance_1_cm",
+        "base_distance_2_cm",
+    ):
         if learning[key] is None:
             continue
         try:
             learning[key] = int(learning[key])
         except (TypeError, ValueError):
             learning[key] = None
-    if learning["learned_sensor_order"] not in (SENSOR_ORDER_AB, SENSOR_ORDER_BA):
-        learning["learned_sensor_order"] = None
+    if learning["sensor_order"] not in (SENSOR_ORDER_AB, SENSOR_ORDER_BA):
+        learning["sensor_order"] = None
     learning["phase"] = str(learning["phase"])
     learning["status"] = str(learning["status"])
     return learning

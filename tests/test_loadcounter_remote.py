@@ -22,7 +22,10 @@ class LoadCounterRemoteTests(unittest.TestCase):
             ".": "dot",
             "7": "digit:7",
             "learn": "learn_start",
-            "stop_learning": "learn_stop",
+            "stop_learning": "learn_end",
+            "learn_calibrate": "learn_calibrate",
+            "learn_count": "learn_count",
+            "learn_cancel": "learn_cancel",
             "cancel": "menu_cancel",
         }
 

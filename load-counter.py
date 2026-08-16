@@ -52,11 +52,13 @@ MIN_BRIGHTNESS_PERCENT = 1
 MAX_BRIGHTNESS_PERCENT = 100
 MAX_COUNTER = 999999
 CALIBRATION_SECONDS = 10.0
-LEARNING_COUNTDOWN_SECONDS = 10.0
 LEARNING_EVENT_EARLY_SECONDS = 1.5
 LEARNING_EVENT_LATE_SECONDS = 2.0
+LEARNING_BASELINE_LOOKBACK_SECONDS = 6.0
+LEARNING_SAMPLE_HISTORY_SECONDS = 20.0
 LEARNING_MIN_DROP_CM = 3.0
 LEARNING_THRESHOLD_MARGIN_CM = 2.0
+LEARNING_NEUTRAL_MARGIN_BUFFER_CM = 2.0
 LEARNING_TIMEOUT_MARGIN_SECONDS = 1.0
 LEARNING_COOLDOWN_MARGIN_SECONDS = 1.5
 NEUTRAL_REARM_SECONDS = 0.25
@@ -582,36 +584,77 @@ def render_calibrating_display(canvas, debug_font, progress=None, sensor_order=S
 def default_learning_state():
     return {
         "active": False,
-        "round": 0,
+        "event_count": 0,
         "started_at": None,
         "event_at": None,
         "phase": "idle",
         "status": "Idle",
         "samples": [],
-        "last_result": None,
+        "results": [],
+        "draft_settings": None,
     }
 
 
-def begin_learning_round(learning, now):
-    previous_result = learning.get("last_result")
+def begin_learning_session(learning, settings, now):
+    learning.clear()
     learning.update({
         "active": True,
-        "round": int(learning.get("round") or 0) + 1,
+        "event_count": 0,
         "started_at": now,
-        "event_at": now + LEARNING_COUNTDOWN_SECONDS,
-        "phase": "countdown",
-        "status": "Countdown",
+        "event_at": None,
+        "phase": "ready",
+        "status": "Ready",
         "samples": [],
-        "last_result": previous_result,
+        "results": [],
+        "draft_settings": sanitize_settings(settings),
     })
     return learning
 
 
-def stop_learning(learning):
-    last_result = learning.get("last_result")
+def mark_learning_event(learning, now):
+    if not learning.get("active") or learning.get("event_at") is not None:
+        return False
+    learning["event_count"] = int(learning.get("event_count") or 0) + 1
+    learning["event_at"] = now
+    learning["phase"] = "observing"
+    learning["status"] = "Observing event"
+    return True
+
+
+def finish_learning_session(learning, settings):
+    if not learning.get("active"):
+        return False
+
+    draft = learning.get("draft_settings")
+    if isinstance(draft, dict):
+        saved = sanitize_settings(draft)
+        settings.update(saved)
+
+    learning["active"] = False
+    learning["event_at"] = None
+    learning["phase"] = "idle"
+    learning["status"] = "Saved"
+    learning["samples"] = []
+    return isinstance(draft, dict)
+
+
+def cancel_learning_session(learning):
+    if not learning.get("active"):
+        return False
+    learning.clear()
     learning.update(default_learning_state())
-    learning["last_result"] = last_result
-    return learning
+    learning["status"] = "Cancelled"
+    return True
+
+
+def reset_learning_after_calibration(learning, calibrated_settings):
+    learning["draft_settings"] = sanitize_settings(calibrated_settings)
+    learning["event_count"] = 0
+    learning["event_at"] = None
+    learning["phase"] = "ready"
+    learning["status"] = "Calibrated"
+    learning["samples"] = []
+    learning["results"] = []
 
 
 def valid_learning_value(value):
@@ -644,7 +687,7 @@ def learning_crossing_time(samples, key, baseline, drop, event_at):
     return None
 
 
-def analyze_learning_round(learning, settings):
+def analyze_learning_event(learning, settings):
     samples = learning.get("samples") or []
     event_at = learning.get("event_at")
     if event_at is None:
@@ -653,14 +696,15 @@ def analyze_learning_round(learning, settings):
     window_start = event_at - LEARNING_EVENT_EARLY_SECONDS
     window_end = event_at + LEARNING_EVENT_LATE_SECONDS
     pre_end = event_at - LEARNING_EVENT_EARLY_SECONDS
+    pre_start = pre_end - LEARNING_BASELINE_LOOKBACK_SECONDS
 
-    pre_1 = learning_values(samples, "d1", end_at=pre_end)
-    pre_2 = learning_values(samples, "d2", end_at=pre_end)
+    pre_1 = learning_values(samples, "d1", start_at=pre_start, end_at=pre_end)
+    pre_2 = learning_values(samples, "d2", start_at=pre_start, end_at=pre_end)
     window_1 = learning_values(samples, "d1", start_at=window_start, end_at=window_end)
     window_2 = learning_values(samples, "d2", start_at=window_start, end_at=window_end)
 
-    baseline_1 = filtered_max(pre_1) or settings.get("base_distance_1_cm")
-    baseline_2 = filtered_max(pre_2) or settings.get("base_distance_2_cm")
+    baseline_1 = settings.get("base_distance_1_cm") or filtered_max(pre_1)
+    baseline_2 = settings.get("base_distance_2_cm") or filtered_max(pre_2)
     if baseline_1 is None or baseline_2 is None or not window_1 or not window_2:
         return None, "NO DATA"
 
@@ -692,6 +736,14 @@ def analyze_learning_round(learning, settings):
         trigger_distance_cm = round(min_drop * 0.6)
     trigger_distance_cm = clamp(trigger_distance_cm, MIN_TRIGGER_DISTANCE, MAX_TRIGGER_DISTANCE)
 
+    neutral_noise = max(pre_noise_1, pre_noise_2)
+    neutral_margin_cm = math.ceil(neutral_noise + LEARNING_NEUTRAL_MARGIN_BUFFER_CM)
+    neutral_margin_cm = clamp(
+        neutral_margin_cm,
+        MIN_NEUTRAL_MARGIN,
+        max(MIN_NEUTRAL_MARGIN, trigger_distance_cm - 1),
+    )
+
     low_level_1 = float(baseline_1) - trigger_distance_cm
     low_level_2 = float(baseline_2) - trigger_distance_cm
     low_samples = [
@@ -717,9 +769,10 @@ def analyze_learning_round(learning, settings):
     )
 
     return {
-        "round": learning.get("round") or 0,
+        "event": learning.get("event_count") or 0,
         "sensor_order": learned_order,
         "trigger_distance_cm": trigger_distance_cm,
+        "neutral_margin_cm": neutral_margin_cm,
         "timeout_ms": timeout_ms,
         "cooldown_ms": cooldown_ms,
         "base_distance_1_cm": round(baseline_1),
@@ -731,6 +784,38 @@ def analyze_learning_round(learning, settings):
     }, "LEARN OK"
 
 
+def median_learning_value(results, key):
+    values = sorted(result[key] for result in results)
+    midpoint = len(values) // 2
+    if len(values) % 2:
+        return values[midpoint]
+    return round((values[midpoint - 1] + values[midpoint]) / 2)
+
+
+def combine_learning_results(results, draft_settings):
+    if not results:
+        return sanitize_settings(draft_settings)
+
+    combined = sanitize_settings(draft_settings)
+    combined["trigger_distance_cm"] = median_learning_value(results, "trigger_distance_cm")
+    combined["neutral_margin_cm"] = min(
+        max(result["neutral_margin_cm"] for result in results),
+        max(MIN_NEUTRAL_MARGIN, combined["trigger_distance_cm"] - 1),
+    )
+    combined["timeout_ms"] = max(result["timeout_ms"] for result in results)
+    combined["cooldown_ms"] = max(result["cooldown_ms"] for result in results)
+
+    order_counts = {
+        SENSOR_ORDER_AB: sum(result["sensor_order"] == SENSOR_ORDER_AB for result in results),
+        SENSOR_ORDER_BA: sum(result["sensor_order"] == SENSOR_ORDER_BA for result in results),
+    }
+    if order_counts[SENSOR_ORDER_AB] == order_counts[SENSOR_ORDER_BA]:
+        combined["sensor_order"] = results[-1]["sensor_order"]
+    else:
+        combined["sensor_order"] = max(order_counts, key=order_counts.get)
+    return sanitize_settings(combined)
+
+
 def update_learning(learning, settings, now, raw_distance1, raw_distance2):
     if not learning.get("active"):
         return False, None
@@ -740,53 +825,47 @@ def update_learning(learning, settings, now, raw_distance1, raw_distance2):
         "d1": raw_distance1,
         "d2": raw_distance2,
     })
+    history_start = now - LEARNING_SAMPLE_HISTORY_SECONDS
+    learning["samples"] = [sample for sample in learning["samples"] if sample["t"] >= history_start]
 
-    event_at = learning["event_at"]
-    if now < event_at:
-        learning["phase"] = "countdown"
-        learning["status"] = "Countdown"
+    event_at = learning.get("event_at")
+    if event_at is None:
         return False, None
 
     if now < event_at + LEARNING_EVENT_LATE_SECONDS:
-        learning["phase"] = "watching"
-        learning["status"] = "Watch now"
         return False, None
 
-    result, status = analyze_learning_round(learning, settings)
-    learning["last_result"] = result
+    draft_settings = learning.get("draft_settings") or sanitize_settings(settings)
+    result, status = analyze_learning_event(learning, draft_settings)
     if result is not None:
-        settings["trigger_distance_cm"] = result["trigger_distance_cm"]
-        settings["timeout_ms"] = result["timeout_ms"]
-        settings["cooldown_ms"] = result["cooldown_ms"]
-        settings["sensor_order"] = result["sensor_order"]
-        settings["base_distance_1_cm"] = result["base_distance_1_cm"]
-        settings["base_distance_2_cm"] = result["base_distance_2_cm"]
-        save_settings(SETTINGS_STATE_PATH, settings)
-        log_event("learning_round", source="learn_mode", learned=result)
-        print(f"Learning round updated settings: {result}", flush=True)
+        learning["results"].append(result)
+        learning["draft_settings"] = combine_learning_results(learning["results"], draft_settings)
+        log_event("learning_event", source="learn_mode", learned=result)
+        print(f"Learning event updated draft settings: {result}", flush=True)
     else:
-        print(f"Learning round did not update settings: {status}", flush=True)
+        print(f"Learning event did not update draft settings: {status}", flush=True)
 
+    learning["event_at"] = None
+    learning["phase"] = "ready"
     learning["status"] = status
-    begin_learning_round(learning, now)
     return result is not None, status
 
 
 def learning_payload(learning, now):
     active = bool(learning.get("active"))
-    event_at = learning.get("event_at") if active else None
-    countdown = max(0, math.ceil(event_at - now)) if event_at is not None else 0
-    last_result = learning.get("last_result") or {}
+    draft = learning.get("draft_settings") or {}
     return {
         "active": active,
-        "round": int(learning.get("round") or 0),
-        "phase": learning.get("phase") or ("countdown" if active else "idle"),
-        "status": learning.get("status") or ("Countdown" if active else "Idle"),
-        "countdown_seconds": countdown,
-        "learned_trigger_distance_cm": last_result.get("trigger_distance_cm"),
-        "learned_timeout_ms": last_result.get("timeout_ms"),
-        "learned_cooldown_ms": last_result.get("cooldown_ms"),
-        "learned_sensor_order": last_result.get("sensor_order"),
+        "event_count": int(learning.get("event_count") or 0),
+        "phase": learning.get("phase") or ("ready" if active else "idle"),
+        "status": learning.get("status") or ("Ready" if active else "Idle"),
+        "trigger_distance_cm": draft.get("trigger_distance_cm"),
+        "neutral_margin_cm": draft.get("neutral_margin_cm"),
+        "timeout_ms": draft.get("timeout_ms"),
+        "cooldown_ms": draft.get("cooldown_ms"),
+        "sensor_order": draft.get("sensor_order"),
+        "base_distance_1_cm": draft.get("base_distance_1_cm"),
+        "base_distance_2_cm": draft.get("base_distance_2_cm"),
     }
 
 
@@ -811,10 +890,10 @@ def publish_learning_state(path, learning, now, last_payload_text):
 def render_learning_display(canvas, font, big_font, debug_font, learning, now, distance1, distance2):
     canvas.Clear()
     payload = learning_payload(learning, now)
-    label = f"LEARN {payload['round']}"
+    label = "LEARNING"
     draw_counter_label(canvas, font, debug_font, label, is_status=True)
 
-    number = str(payload["countdown_seconds"])
+    number = str(payload["event_count"])
     count_width = text_width(big_font, number)
     draw_count_pixels(
         canvas,
@@ -825,8 +904,8 @@ def render_learning_display(canvas, font, big_font, debug_font, learning, now, d
     status_color = graphics.Color(255, 180, 80)
     sensor_a = f"A{max(0, min(9999, round(distance1))):>4}" if distance1 is not None else "A----"
     sensor_b = f"B{max(0, min(9999, round(distance2))):>4}" if distance2 is not None else "B----"
-    status = "NOW" if payload["phase"] == "watching" else "RDY"
-    if payload["status"] not in ("Countdown", "Watch now"):
+    status = "OBS" if payload["phase"] == "observing" else "RDY"
+    if payload["status"] not in ("Ready", "Observing event"):
         status = payload["status"][:3].upper()
 
     graphics.DrawText(canvas, debug_font, 0, HEIGHT - 1, value_color, sensor_a)
@@ -1575,7 +1654,7 @@ def parse_direct_sensor_order(command):
     return None
 
 
-def run_calibration(settings, matrix, offscreen_canvas, debug_font, us100_1, us100_2):
+def run_calibration(settings, matrix, offscreen_canvas, debug_font, us100_1, us100_2, persist=True):
     def update_calibration_display(progress):
         nonlocal offscreen_canvas
         render_calibrating_display(
@@ -1610,7 +1689,8 @@ def run_calibration(settings, matrix, offscreen_canvas, debug_font, us100_1, us1
 
     settings["base_distance_1_cm"] = base_1
     settings["base_distance_2_cm"] = base_2
-    save_settings(SETTINGS_STATE_PATH, settings)
+    if persist:
+        save_settings(SETTINGS_STATE_PATH, settings)
     print(f"Calibrated base distances to {base_1}cm/{base_2}cm", flush=True)
     return settings, offscreen_canvas, True
 
@@ -1892,6 +1972,35 @@ while True:
             settings["base_distance_2_cm"] = base_2
             direct_settings_changed = True
             direct_status = "DEFAULTS"
+        elif command == "learn_calibrate":
+            handled_direct_command = True
+            if learning.get("active"):
+                learning["phase"] = "calibrating"
+                learning["status"] = "Calibrating"
+                last_learning_state_json = publish_learning_state(
+                    LEARNING_STATE_PATH,
+                    learning,
+                    now,
+                    last_learning_state_json,
+                )
+                learning_draft = sanitize_settings(learning.get("draft_settings") or settings)
+                learning_draft, offscreen_canvas, calibrated = run_calibration(
+                    learning_draft,
+                    matrix,
+                    offscreen_canvas,
+                    debug_font,
+                    us100_1,
+                    us100_2,
+                    persist=False,
+                )
+                if calibrated:
+                    reset_learning_after_calibration(learning, learning_draft)
+                else:
+                    learning["phase"] = "ready"
+                    learning["status"] = "Calibration failed"
+                direct_status = "CAL OK" if calibrated else "CAL FAIL"
+            else:
+                direct_status = "LEARN OFF"
         elif command == "calibrate":
             handled_direct_command = True
             settings, offscreen_canvas, calibrated = run_calibration(
@@ -1958,16 +2067,32 @@ while True:
             sensor2_ready_after_sensor1 = False
             last_counted_at = None
             counter_trigger_state = default_trigger_state()
-            begin_learning_round(learning, now)
+            begin_learning_session(learning, settings, now)
             direct_status = "LEARN"
-        elif command == "learn_stop":
+        elif command == "learn_count":
             handled_direct_command = True
-            stop_learning(learning)
+            if mark_learning_event(learning, now):
+                direct_status = "OBSERVE"
+            elif learning.get("active"):
+                direct_status = "WAIT"
+            else:
+                direct_status = "LEARN OFF"
+        elif command in ("learn_end", "learn_stop"):
+            handled_direct_command = True
+            direct_settings_changed = finish_learning_session(learning, settings)
             sensor1_triggered_at = None
             sensor2_ready_after_sensor1 = False
             last_counted_at = None
             counter_trigger_state = default_trigger_state()
-            direct_status = "LEARN OFF"
+            direct_status = "LEARN SAVED" if direct_settings_changed else "LEARN OFF"
+        elif command == "learn_cancel":
+            handled_direct_command = True
+            cancelled = cancel_learning_session(learning)
+            sensor1_triggered_at = None
+            sensor2_ready_after_sensor1 = False
+            last_counted_at = None
+            counter_trigger_state = default_trigger_state()
+            direct_status = "CANCELLED" if cancelled else "LEARN OFF"
         else:
             handled_direct_command, direct_settings_changed, direct_status = apply_direct_setting_command(command, settings)
 

@@ -64,10 +64,10 @@ class LoadCounterCoreTests(unittest.TestCase):
         self.assertTrue(ignored)
         self.assertEqual(last_valid, 164)
 
-    def test_learning_round_learns_order_and_timing(self):
+    def test_learning_event_learns_all_detection_parameters(self):
         learning = self.core.default_learning_state()
         learning.update({
-            "round": 1,
+            "event_count": 1,
             "event_at": 10.0,
             "samples": [
                 {"t": 0.0, "d1": 100, "d2": 100},
@@ -81,7 +81,7 @@ class LoadCounterCoreTests(unittest.TestCase):
             ],
         })
 
-        result, status = self.core.analyze_learning_round(learning, self.core.default_settings())
+        result, status = self.core.analyze_learning_event(learning, self.core.default_settings())
 
         self.assertEqual(status, "LEARN OK")
         self.assertEqual(result["sensor_order"], self.core.SENSOR_ORDER_AB)
@@ -89,7 +89,86 @@ class LoadCounterCoreTests(unittest.TestCase):
         self.assertEqual(result["base_distance_1_cm"], 100)
         self.assertEqual(result["base_distance_2_cm"], 100)
         self.assertGreaterEqual(result["trigger_distance_cm"], self.core.MIN_TRIGGER_DISTANCE)
+        self.assertLess(result["neutral_margin_cm"], result["trigger_distance_cm"])
         self.assertGreaterEqual(result["cooldown_ms"], 1000)
+
+    def test_learning_event_updates_draft_without_changing_live_settings(self):
+        settings = self.core.default_settings()
+        settings["base_distance_1_cm"] = 100
+        settings["base_distance_2_cm"] = 100
+        original_settings = settings.copy()
+        learning = self.core.default_learning_state()
+        self.core.begin_learning_session(learning, settings, 0.0)
+        learning["samples"] = [
+            {"t": 3.0, "d1": 100, "d2": 100},
+            {"t": 7.0, "d1": 99, "d2": 100},
+            {"t": 9.7, "d1": 65, "d2": 100},
+            {"t": 10.0, "d1": 65, "d2": 60},
+            {"t": 11.0, "d1": 100, "d2": 80},
+        ]
+        self.assertTrue(self.core.mark_learning_event(learning, 10.0))
+        previous_logger = self.core.log_event
+        self.core.log_event = lambda *args, **kwargs: None
+        try:
+            changed, status = self.core.update_learning(learning, settings, 12.0, 100, 100)
+        finally:
+            self.core.log_event = previous_logger
+
+        self.assertTrue(changed)
+        self.assertEqual(status, "LEARN OK")
+        self.assertEqual(settings, original_settings)
+        self.assertNotEqual(learning["draft_settings"]["trigger_distance_cm"], original_settings["trigger_distance_cm"])
+
+    def test_learning_end_saves_draft_and_cancel_discards_it(self):
+        settings = self.core.default_settings()
+        learning = self.core.default_learning_state()
+        self.core.begin_learning_session(learning, settings, 1.0)
+        learning["draft_settings"]["trigger_distance_cm"] = 17
+        learning["draft_settings"]["neutral_margin_cm"] = 5
+
+        self.assertTrue(self.core.finish_learning_session(learning, settings))
+        self.assertEqual(settings["trigger_distance_cm"], 17)
+        self.assertEqual(settings["neutral_margin_cm"], 5)
+        self.assertFalse(learning["active"])
+
+        self.core.begin_learning_session(learning, settings, 2.0)
+        learning["draft_settings"]["trigger_distance_cm"] = 29
+        self.assertTrue(self.core.cancel_learning_session(learning))
+        self.assertEqual(settings["trigger_distance_cm"], 17)
+        self.assertFalse(learning["active"])
+
+    def test_calibration_resets_examples_but_remains_in_draft(self):
+        settings = self.core.default_settings()
+        learning = self.core.default_learning_state()
+        self.core.begin_learning_session(learning, settings, 1.0)
+        learning["event_count"] = 2
+        learning["results"] = [{"trigger_distance_cm": 10}]
+        calibrated = settings.copy()
+        calibrated["base_distance_1_cm"] = 123
+        calibrated["base_distance_2_cm"] = 145
+
+        self.core.reset_learning_after_calibration(learning, calibrated)
+
+        self.assertEqual(learning["event_count"], 0)
+        self.assertEqual(learning["results"], [])
+        self.assertEqual(learning["draft_settings"]["base_distance_1_cm"], 123)
+        self.assertIsNone(settings["base_distance_1_cm"])
+
+    def test_learning_results_use_median_sensitivity_and_conservative_timing(self):
+        settings = self.core.default_settings()
+        results = [
+            {"trigger_distance_cm": 10, "neutral_margin_cm": 3, "timeout_ms": 1200, "cooldown_ms": 2200, "sensor_order": "A/B"},
+            {"trigger_distance_cm": 16, "neutral_margin_cm": 5, "timeout_ms": 1800, "cooldown_ms": 2600, "sensor_order": "A/B"},
+            {"trigger_distance_cm": 40, "neutral_margin_cm": 9, "timeout_ms": 1400, "cooldown_ms": 2100, "sensor_order": "B/A"},
+        ]
+
+        combined = self.core.combine_learning_results(results, settings)
+
+        self.assertEqual(combined["trigger_distance_cm"], 16)
+        self.assertEqual(combined["neutral_margin_cm"], 9)
+        self.assertEqual(combined["timeout_ms"], 1800)
+        self.assertEqual(combined["cooldown_ms"], 2600)
+        self.assertEqual(combined["sensor_order"], "A/B")
 
     def trigger_settings(self, sensor_order=None):
         settings = self.core.default_settings()

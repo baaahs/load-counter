@@ -28,25 +28,29 @@ struct LoadCounterSettings: Codable, Equatable {
 
 struct LoadCounterLearningState: Codable, Equatable {
     let active: Bool
-    let round: Int
+    let eventCount: Int
     let phase: String
     let status: String
-    let countdownSeconds: Int
-    let learnedTriggerDistanceCm: Int?
-    let learnedTimeoutMs: Int?
-    let learnedCooldownMs: Int?
-    let learnedSensorOrder: String?
+    let triggerDistanceCm: Int?
+    let neutralMarginCm: Int?
+    let timeoutMs: Int?
+    let cooldownMs: Int?
+    let sensorOrder: String?
+    let baseDistance1Cm: Int?
+    let baseDistance2Cm: Int?
 
     enum CodingKeys: String, CodingKey {
         case active
-        case round
+        case eventCount = "event_count"
         case phase
         case status
-        case countdownSeconds = "countdown_seconds"
-        case learnedTriggerDistanceCm = "learned_trigger_distance_cm"
-        case learnedTimeoutMs = "learned_timeout_ms"
-        case learnedCooldownMs = "learned_cooldown_ms"
-        case learnedSensorOrder = "learned_sensor_order"
+        case triggerDistanceCm = "trigger_distance_cm"
+        case neutralMarginCm = "neutral_margin_cm"
+        case timeoutMs = "timeout_ms"
+        case cooldownMs = "cooldown_ms"
+        case sensorOrder = "sensor_order"
+        case baseDistance1Cm = "base_distance_1_cm"
+        case baseDistance2Cm = "base_distance_2_cm"
     }
 }
 
@@ -187,8 +191,14 @@ final class BluetoothController: NSObject, ObservableObject {
             return "Closing matrix menu"
         case "learn_start":
             return "Learning started"
-        case "learn_stop":
-            return "Learning stopped"
+        case "learn_calibrate":
+            return "Calibrating"
+        case "learn_count":
+            return "Observing event"
+        case "learn_end", "learn_stop":
+            return "Learning saved"
+        case "learn_cancel":
+            return "Learning cancelled"
         case "enter":
             return "Opening matrix menu"
         case "count_reset":

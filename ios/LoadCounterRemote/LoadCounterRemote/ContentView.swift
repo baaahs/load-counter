@@ -19,6 +19,9 @@ struct ContentView: View {
 
     @State private var showDefaultsConfirmation = false
     @State private var showCalibrationConfirmation = false
+    @State private var showLearningCalibrationConfirmation = false
+    @State private var showLearningSheet = false
+    @State private var isFinishingLearning = false
     @State private var showMatrixControls = false
 
     private enum NumericField: Hashable {
@@ -76,6 +79,12 @@ struct ContentView: View {
                     return
                 }
                 applyDeviceState(state)
+                if state.learning?.active == true, !isFinishingLearning {
+                    showLearningSheet = true
+                } else if state.learning?.active != true, isFinishingLearning {
+                    showLearningSheet = false
+                    isFinishingLearning = false
+                }
             }
             .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
                 if bluetooth.isReady {
@@ -100,6 +109,9 @@ struct ContentView: View {
             }
             .sheet(isPresented: $showMatrixControls, onDismiss: closeMatrixMenu) {
                 matrixControlsSheet
+            }
+            .sheet(isPresented: $showLearningSheet) {
+                learningSheet
             }
         }
     }
@@ -170,82 +182,106 @@ struct ContentView: View {
         Section("Learn") {
             Button {
                 if isLearning {
-                    bluetooth.send("learn_stop", feedback: "Learning stopped")
+                    showLearningSheet = true
                 } else {
+                    isFinishingLearning = false
                     bluetooth.send("learn_start", feedback: "Learning started")
+                    showLearningSheet = true
                 }
             } label: {
-                Label(isLearning ? "Stop Learning" : "Start Learning", systemImage: isLearning ? "stop.circle.fill" : "graduationcap")
-                    .foregroundStyle(isLearning ? .red : .purple)
+                Label(isLearning ? "Open Learning Session" : "Start Learning", systemImage: "graduationcap")
+                    .foregroundStyle(.purple)
             }
 
-            if let learning = bluetooth.deviceState?.learning {
-                if learning.active {
-                    LabeledContent {
-                        Text("\(learning.countdownSeconds)")
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                    } label: {
-                        Label("Countdown", systemImage: "timer")
-                            .foregroundStyle(.purple)
-                    }
+            if isLearning, let learning = bluetooth.deviceState?.learning {
+                LabeledContent("Events", value: "\(learning.eventCount)")
+            }
+        }
+    }
 
-                    LabeledContent {
-                        Text("\(learning.round)")
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                    } label: {
-                        Label("Round", systemImage: "repeat")
-                            .foregroundStyle(.purple)
-                    }
-
-                    LabeledContent {
-                        Text(learningStatusText(learning))
-                            .foregroundStyle(.secondary)
-                    } label: {
-                        Label("Status", systemImage: "waveform.path.ecg")
-                            .foregroundStyle(.purple)
-                    }
-                }
-
-                if hasLearnedValues(learning) {
-                    LabeledContent {
-                        Text(learning.learnedTriggerDistanceCm.map { "\($0) cm" } ?? "--")
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                    } label: {
-                        Label("Trigger Distance", systemImage: "ruler")
-                            .foregroundStyle(.purple)
-                    }
-
-                    LabeledContent {
-                        Text(millisecondsText(learning.learnedTimeoutMs))
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                    } label: {
-                        Label("Timeout", systemImage: "timer")
-                            .foregroundStyle(.purple)
-                    }
-
-                    LabeledContent {
-                        Text(millisecondsText(learning.learnedCooldownMs))
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                    } label: {
-                        Label("Cooldown", systemImage: "hourglass")
-                            .foregroundStyle(.purple)
-                    }
-
-                    if let learnedSensorOrder = learning.learnedSensorOrder {
-                        LabeledContent {
-                            Text(learnedSensorOrder)
-                                .foregroundStyle(.secondary)
-                        } label: {
-                            Label("Order", systemImage: "arrow.left.arrow.right")
-                                .foregroundStyle(.purple)
+    private var learningSheet: some View {
+        NavigationStack {
+            Form {
+                if isFinishingLearning {
+                    Section {
+                        HStack {
+                            Spacer()
+                            ProgressView("Finishing learning session")
+                            Spacer()
                         }
                     }
+                } else if let learning = bluetooth.deviceState?.learning, learning.active {
+                    Section {
+                        learningParameterRow("Status", value: learningStatusText(learning), systemImage: "waveform.path.ecg")
+                        learningParameterRow("Events", value: "\(learning.eventCount)", systemImage: "figure.stairs")
+                    }
+
+                    Section("Parameters") {
+                        learningParameterRow(
+                            "Calibration",
+                            value: learningCalibrationText(learning),
+                            systemImage: "scope"
+                        )
+                        learningParameterRow(
+                            "Trigger Distance",
+                            value: learning.triggerDistanceCm.map { "\($0) cm" } ?? "--",
+                            systemImage: "ruler"
+                        )
+                        learningParameterRow(
+                            "Neutral Margin",
+                            value: learning.neutralMarginCm.map { "\($0) cm" } ?? "--",
+                            systemImage: "dot.circle.and.hand.point.up.left.fill"
+                        )
+                        learningParameterRow("Timeout", value: millisecondsText(learning.timeoutMs), systemImage: "timer")
+                        learningParameterRow("Cooldown", value: millisecondsText(learning.cooldownMs), systemImage: "hourglass")
+                        learningParameterRow("Sensor Order", value: learning.sensorOrder ?? "--", systemImage: "arrow.left.arrow.right")
+                    }
+
+                    Section {
+                        Button {
+                            showLearningCalibrationConfirmation = true
+                        } label: {
+                            Label("Calibrate", systemImage: "dot.scope")
+                        }
+                        .disabled(learning.phase == "observing" || learning.phase == "calibrating")
+
+                        Button {
+                            bluetooth.send("learn_count", feedback: "Observing event")
+                        } label: {
+                            Label("Count", systemImage: "plus.circle.fill")
+                        }
+                        .disabled(learning.phase != "ready")
+
+                        Button {
+                            bluetooth.send("learn_end", feedback: "Learning saved")
+                            isFinishingLearning = true
+                        } label: {
+                            Label("End and Save", systemImage: "checkmark.circle.fill")
+                        }
+                        .disabled(learning.phase == "observing" || learning.phase == "calibrating")
+
+                        Button(role: .destructive) {
+                            bluetooth.send("learn_cancel", feedback: "Learning cancelled")
+                            isFinishingLearning = true
+                        } label: {
+                            Label("Cancel", systemImage: "xmark.circle")
+                        }
+                    }
+                } else {
+                    ProgressView()
                 }
+            }
+            .navigationTitle("Learn")
+            .navigationBarTitleDisplayMode(.inline)
+            .tint(.purple)
+            .interactiveDismissDisabled(isLearning || isFinishingLearning)
+            .alert("Calibrate sensors?", isPresented: $showLearningCalibrationConfirmation) {
+                Button("Cancel", role: .cancel) {}
+                Button("Calibrate") {
+                    bluetooth.send("learn_calibrate", feedback: "Calibrating")
+                }
+            } message: {
+                Text("Keep the sensors clear. Calibration stays in this learning session until you end and save.")
             }
         }
     }
@@ -679,22 +715,37 @@ struct ContentView: View {
         }
     }
 
-    private func hasLearnedValues(_ learning: LoadCounterLearningState) -> Bool {
-        learning.learnedTriggerDistanceCm != nil
-            || learning.learnedTimeoutMs != nil
-            || learning.learnedCooldownMs != nil
-            || learning.learnedSensorOrder != nil
+    private func learningParameterRow(_ title: String, value: String, systemImage: String) -> some View {
+        LabeledContent {
+            Text(value)
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.trailing)
+        } label: {
+            Label(title, systemImage: systemImage)
+                .foregroundStyle(.purple)
+        }
     }
 
     private func learningStatusText(_ learning: LoadCounterLearningState) -> String {
         switch learning.phase {
-        case "countdown":
-            return "Countdown"
-        case "watching":
-            return "Watch now"
+        case "observing":
+            return "Observing event"
+        case "calibrating":
+            return "Calibrating"
         default:
             return learning.status.replacingOccurrences(of: "_", with: " ")
         }
+    }
+
+    private func learningCalibrationText(_ learning: LoadCounterLearningState) -> String {
+        guard let first = learning.baseDistance1Cm, let second = learning.baseDistance2Cm else {
+            return "Not calibrated"
+        }
+        if learning.sensorOrder == "B/A" {
+            return "A \(second) cm, B \(first) cm"
+        }
+        return "A \(first) cm, B \(second) cm"
     }
 
     private func numericUnit(for field: NumericField) -> String? {

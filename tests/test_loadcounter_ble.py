@@ -46,7 +46,10 @@ class LoadCounterBleTests(unittest.TestCase):
             "open_menu": "menu_open",
             "close_menu": "menu_cancel",
             "learn": "learn_start",
-            "stop_learning": "learn_stop",
+            "stop_learning": "learn_end",
+            "learning_calibrate": "learn_calibrate",
+            "learning_count": "learn_count",
+            "cancel_learning": "learn_cancel",
             "counter:42": "counter:42",
             "threshold:999": "trigger_distance_cm:300",
             "trigger_distance_cm:42": "trigger_distance_cm:42",
@@ -91,14 +94,16 @@ class LoadCounterBleTests(unittest.TestCase):
                 json.dump(
                     {
                         "active": 1,
-                        "round": "3",
-                        "phase": "countdown",
-                        "status": "Watch_now",
-                        "countdown_seconds": "7",
-                        "learned_trigger_distance_cm": "12",
-                        "learned_timeout_ms": "1400",
-                        "learned_cooldown_ms": "2500",
-                        "learned_sensor_order": "B/A",
+                        "event_count": "3",
+                        "phase": "ready",
+                        "status": "Learn_OK",
+                        "trigger_distance_cm": "12",
+                        "neutral_margin_cm": "4",
+                        "timeout_ms": "1400",
+                        "cooldown_ms": "2500",
+                        "sensor_order": "B/A",
+                        "base_distance_1_cm": "120",
+                        "base_distance_2_cm": "140",
                     },
                     handle,
                 )
@@ -107,10 +112,11 @@ class LoadCounterBleTests(unittest.TestCase):
                 learning = self.ble.load_learning_state()
 
         self.assertTrue(learning["active"])
-        self.assertEqual(learning["round"], 3)
-        self.assertEqual(learning["countdown_seconds"], 7)
-        self.assertEqual(learning["learned_trigger_distance_cm"], 12)
-        self.assertEqual(learning["learned_sensor_order"], "B/A")
+        self.assertEqual(learning["event_count"], 3)
+        self.assertEqual(learning["trigger_distance_cm"], 12)
+        self.assertEqual(learning["neutral_margin_cm"], 4)
+        self.assertEqual(learning["sensor_order"], "B/A")
+        self.assertEqual(learning["base_distance_2_cm"], 140)
 
     def test_state_payload_reports_program_and_hides_learning_when_program_is_stopped(self):
         with mock.patch.object(self.ble, "service_status", return_value="inactive"), mock.patch.object(
