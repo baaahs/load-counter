@@ -102,6 +102,8 @@ final class BluetoothController: NSObject, ObservableObject {
     private var historyCharacteristic: CBCharacteristic?
     private var pendingHistoryCursor: Int?
     private var shouldReconnect = true
+    private var deviceHistoryEvents: [LoadCounterHistoryEvent] = []
+    private var deviceHistorySyncDate: Date?
 
     override init() {
         super.init()
@@ -167,11 +169,28 @@ final class BluetoothController: NSObject, ObservableObject {
 
     func loadSampleHistory() {
         stopHistorySync(error: nil)
+        if !isUsingSampleHistory {
+            deviceHistoryEvents = historyEvents
+            deviceHistorySyncDate = lastHistorySync
+        }
         historyEvents = SampleHistoryGenerator.events()
         historyError = nil
         historyProgress = 1
         lastHistorySync = Date()
         isUsingSampleHistory = true
+    }
+
+    func exitSampleHistory() {
+        guard isUsingSampleHistory else { return }
+        stopHistorySync(error: nil)
+        isUsingSampleHistory = false
+        historyEvents = deviceHistoryEvents
+        lastHistorySync = deviceHistorySyncDate
+        historyError = nil
+        historyProgress = historyEvents.isEmpty ? 0 : 1
+        if isReady, historyAvailable {
+            refreshHistory()
+        }
     }
 
     private func requestHistoryPage(cursor: Int) {
@@ -198,6 +217,8 @@ final class BluetoothController: NSObject, ObservableObject {
             historyProgress = page.total == 0 ? 1 : min(1, Double(historyEvents.count) / Double(page.total))
             if page.done {
                 lastHistorySync = Date()
+                deviceHistoryEvents = historyEvents
+                deviceHistorySyncDate = lastHistorySync
                 stopHistorySync(error: nil)
             } else if page.nextCursor > page.cursor {
                 requestHistoryPage(cursor: page.nextCursor)

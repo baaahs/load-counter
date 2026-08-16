@@ -302,25 +302,39 @@ enum HistoryAnalytics {
 
 enum SampleHistoryGenerator {
     static func events(now: Date = Date(), calendar: Calendar = .current) -> [LoadCounterHistoryEvent] {
+        var generator = SystemRandomNumberGenerator()
+        return events(now: now, calendar: calendar, using: &generator)
+    }
+
+    static func events<Generator: RandomNumberGenerator>(
+        now: Date = Date(),
+        calendar: Calendar = .current,
+        using generator: inout Generator
+    ) -> [LoadCounterHistoryEvent] {
         var events: [LoadCounterHistoryEvent] = []
-        var count = 40
+        var count = Int.random(in: 20...90, using: &generator)
         let today = calendar.startOfDay(for: now)
+        let resetDay = Int.random(in: -36 ... -18, using: &generator)
 
         for dayOffset in -44...0 {
             guard let day = calendar.date(byAdding: .day, value: dayOffset, to: today) else { continue }
-            let pattern = abs(dayOffset * 17 + 11)
-            let burstCount = 1 + pattern % 3
+            let burstCount = Int.random(in: 1...3, using: &generator)
 
-            if dayOffset.isMultiple(of: 12),
-               let learningDate = calendar.date(byAdding: .hour, value: 9, to: day),
+            if Int.random(in: 0..<12, using: &generator) == 0,
+               let learningHour = calendar.date(byAdding: .hour, value: 9, to: day),
+               let learningDate = calendar.date(
+                   byAdding: .minute,
+                   value: Int.random(in: 0..<45, using: &generator),
+                   to: learningHour
+               ),
                learningDate <= now {
                 events.append(event(at: learningDate, kind: "l", oldCount: nil, newCount: nil, source: "sample"))
             }
 
             for burstIndex in 0..<burstCount {
-                let hour = 11 + burstIndex * 3
-                let minute = (pattern * 3 + burstIndex * 11) % 35
-                let peopleCount = 8 + (pattern + burstIndex * 7) % 13
+                let hour = 10 + burstIndex * 3 + Int.random(in: 0...1, using: &generator)
+                let minute = Int.random(in: 0..<40, using: &generator)
+                let peopleCount = Int.random(in: 8...20, using: &generator)
                 guard
                     let hourDate = calendar.date(byAdding: .hour, value: hour, to: day),
                     let burstStart = calendar.date(byAdding: .minute, value: minute, to: hourDate)
@@ -337,13 +351,20 @@ enum SampleHistoryGenerator {
                 }
             }
 
-            if dayOffset.isMultiple(of: 9), let manualDate = calendar.date(byAdding: .hour, value: 19, to: day), manualDate <= now {
+            if Int.random(in: 0..<9, using: &generator) == 0,
+               let manualHour = calendar.date(byAdding: .hour, value: 19, to: day),
+               let manualDate = calendar.date(
+                   byAdding: .minute,
+                   value: Int.random(in: 0..<45, using: &generator),
+                   to: manualHour
+               ),
+               manualDate <= now {
                 let oldCount = count
-                count += 3
+                count += Int.random(in: 1...5, using: &generator)
                 events.append(event(at: manualDate, kind: "m", oldCount: oldCount, newCount: count, source: "iphone"))
             }
 
-            if dayOffset == -28, let resetDate = calendar.date(byAdding: .hour, value: 20, to: day) {
+            if dayOffset == resetDay, let resetDate = calendar.date(byAdding: .hour, value: 20, to: day) {
                 let oldCount = count
                 count = 0
                 events.append(event(at: resetDate, kind: "r", oldCount: oldCount, newCount: count, source: "iphone"))

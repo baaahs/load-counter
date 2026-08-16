@@ -173,6 +173,16 @@ struct HistoryView: View {
                     .buttonStyle(.bordered)
                     .buttonBorderShape(.circle)
                     .accessibilityLabel("Regenerate sample data")
+
+                    Button {
+                        bluetooth.exitSampleHistory()
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .buttonStyle(.bordered)
+                    .buttonBorderShape(.circle)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Return to device history")
                 }
             } else if !bluetooth.isReady, bluetooth.historyEvents.isEmpty {
                 VStack(alignment: .leading, spacing: 10) {

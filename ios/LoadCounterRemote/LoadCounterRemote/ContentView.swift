@@ -402,7 +402,6 @@ struct ContentView: View {
                 openMatrixMenu()
             } label: {
                 Label("Open Pi Settings Menu", systemImage: "slider.horizontal.3")
-                    .font(.headline)
             }
         }
     }
