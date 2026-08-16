@@ -122,15 +122,31 @@ struct HistoryView: View {
                 }
             } else if bluetooth.isUsingSampleHistory {
                 HStack(spacing: 12) {
-                    Label("\(bluetooth.historyEvents.count) generated sample events", systemImage: "wand.and.stars")
+                    Image(systemName: "wand.and.stars")
+                        .font(.body.weight(.semibold))
                         .foregroundStyle(.purple)
+                        .frame(width: 34, height: 34)
+                        .background(.purple.opacity(0.12), in: RoundedRectangle(cornerRadius: 7))
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Sample Data")
+                            .font(.subheadline.weight(.semibold))
+                        Text("\(bluetooth.historyEvents.count.formatted()) generated events")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
                     Spacer()
-                    Button("Regenerate") {
+
+                    Button {
                         bluetooth.loadSampleHistory()
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
                     }
                     .buttonStyle(.bordered)
+                    .buttonBorderShape(.circle)
+                    .accessibilityLabel("Regenerate sample data")
                 }
-                .font(.subheadline)
             } else if !bluetooth.isReady, bluetooth.historyEvents.isEmpty {
                 VStack(alignment: .leading, spacing: 10) {
                     Label("No LoadCounter connection", systemImage: "iphone.and.arrow.forward")
@@ -166,7 +182,7 @@ struct HistoryView: View {
 
     private var controlsSection: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("VIEW")
+            Text("DISPLAY")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
 
@@ -184,30 +200,41 @@ struct HistoryView: View {
             }
             .pickerStyle(.segmented)
 
-            HStack(spacing: 12) {
+            VStack(spacing: 0) {
                 customizationMenu(
-                    title: grouping.rawValue,
+                    title: "Grouping",
                     systemImage: "calendar",
                     options: HistoryGrouping.allCases,
                     selection: $grouping
                 )
+
+                Divider()
+                    .padding(.leading, 48)
+
                 customizationMenu(
-                    title: chartStyle.rawValue,
+                    title: "Chart Style",
                     systemImage: chartStyle == .bars ? "chart.bar" : "chart.xyaxis.line",
                     options: HistoryChartStyle.allCases,
                     selection: $chartStyle
                 )
+
+                Divider()
+                    .padding(.leading, 48)
 
                 Menu {
                     ForEach(HistoryEventKind.allCases) { kind in
                         Toggle(kind.shortTitle, isOn: kindBinding(kind))
                     }
                 } label: {
-                    Label("Events", systemImage: "line.3.horizontal.decrease.circle")
-                        .frame(maxWidth: .infinity)
+                    settingsMenuLabel(
+                        title: "Event Types",
+                        value: eventFilterSummary,
+                        systemImage: "line.3.horizontal.decrease.circle"
+                    )
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.plain)
             }
+            .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 8))
         }
         .padding()
         .background(Color(uiColor: .systemBackground))
@@ -437,10 +464,48 @@ struct HistoryView: View {
                 }
             }
         } label: {
-            Label(title, systemImage: systemImage)
-                .frame(maxWidth: .infinity)
+            settingsMenuLabel(
+                title: title,
+                value: selection.wrappedValue.rawValue,
+                systemImage: systemImage
+            )
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(.plain)
+    }
+
+    private func settingsMenuLabel(title: String, value: String, systemImage: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: systemImage)
+                .foregroundStyle(.purple)
+                .frame(width: 24)
+
+            Text(title)
+                .foregroundStyle(.primary)
+
+            Spacer(minLength: 12)
+
+            Text(value)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+
+            Image(systemName: "chevron.up.chevron.down")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.tertiary)
+        }
+        .font(.subheadline)
+        .frame(maxWidth: .infinity, minHeight: 44)
+        .padding(.horizontal, 12)
+        .contentShape(Rectangle())
+    }
+
+    private var eventFilterSummary: String {
+        if includedKinds.count == HistoryEventKind.allCases.count {
+            return "All"
+        }
+        if includedKinds.isEmpty {
+            return "None"
+        }
+        return "\(includedKinds.count) Selected"
     }
 
     private func kindBinding(_ kind: HistoryEventKind) -> Binding<Bool> {
