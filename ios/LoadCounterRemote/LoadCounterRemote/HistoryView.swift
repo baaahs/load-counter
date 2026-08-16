@@ -54,6 +54,14 @@ struct HistoryView: View {
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button {
+                    bluetooth.loadSampleHistory()
+                } label: {
+                    Image(systemName: "wand.and.stars")
+                }
+                .disabled(bluetooth.isLoadingHistory)
+                .accessibilityLabel("Generate sample history")
+
+                Button {
                     bluetooth.refreshHistory()
                 } label: {
                     Image(systemName: "arrow.clockwise")
@@ -71,7 +79,10 @@ struct HistoryView: View {
             }
         }
         .task {
-            if bluetooth.historyEvents.isEmpty, !bluetooth.isLoadingHistory {
+            if bluetooth.historyEvents.isEmpty,
+               !bluetooth.isLoadingHistory,
+               bluetooth.isReady,
+               bluetooth.historyAvailable {
                 bluetooth.refreshHistory()
             }
         }
@@ -96,6 +107,28 @@ struct HistoryView: View {
                     Text("Loading \(Int((bluetooth.historyProgress * 100).rounded()))%")
                         .font(.subheadline.monospacedDigit())
                         .foregroundStyle(.secondary)
+                }
+            } else if bluetooth.isUsingSampleHistory {
+                HStack(spacing: 12) {
+                    Label("\(bluetooth.historyEvents.count) generated sample events", systemImage: "wand.and.stars")
+                        .foregroundStyle(.purple)
+                    Spacer()
+                    Button("Regenerate") {
+                        bluetooth.loadSampleHistory()
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .font(.subheadline)
+            } else if !bluetooth.isReady, bluetooth.historyEvents.isEmpty {
+                VStack(alignment: .leading, spacing: 10) {
+                    Label("No LoadCounter connection", systemImage: "iphone.and.arrow.forward")
+                        .font(.subheadline.weight(.semibold))
+                    Button {
+                        bluetooth.loadSampleHistory()
+                    } label: {
+                        Label("Generate Sample Data", systemImage: "wand.and.stars")
+                    }
+                    .buttonStyle(.borderedProminent)
                 }
             } else if let error = bluetooth.historyError {
                 Label(error, systemImage: "exclamationmark.triangle.fill")

@@ -42,7 +42,6 @@ struct ContentView: View {
                 counterSection
                     .disabled(!controlsAreEnabled)
                 historySection
-                    .disabled(!bluetooth.isReady)
                 learningSection
                     .disabled(!controlsAreEnabled)
                 sensorsSection
@@ -499,11 +498,17 @@ struct ContentView: View {
     }
 
     private var historySubtitle: String {
+        if bluetooth.isUsingSampleHistory {
+            return "Offline sample data"
+        }
         if bluetooth.isLoadingHistory {
             return "Syncing from device"
         }
         if !bluetooth.historyEvents.isEmpty {
             return "\(bluetooth.historyEvents.count) events available"
+        }
+        if !bluetooth.isReady {
+            return "Offline chart preview available"
         }
         return "Charts, stats, and PDF export"
     }

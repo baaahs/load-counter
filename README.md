@@ -60,6 +60,8 @@ Logged event names are `counter_triggered`, `manual_number_changed`, and
 
 The iPhone app's History screen reads this same file through a paginated BLE
 characteristic. It does not create or maintain a second event log on the Pi.
+When no Pi is connected, the same screen can generate deterministic sample data
+on the iPhone to test its charts, filters, statistics, and PDF reports offline.
 
 ### Control from your Mac keyboard
 

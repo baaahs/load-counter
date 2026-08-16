@@ -93,6 +93,7 @@ final class BluetoothController: NSObject, ObservableObject {
     @Published var historyProgress = 0.0
     @Published var historyError: String?
     @Published var lastHistorySync: Date?
+    @Published var isUsingSampleHistory = false
 
     private var central: CBCentralManager!
     private var peripheral: CBPeripheral?
@@ -157,10 +158,20 @@ final class BluetoothController: NSObject, ObservableObject {
             return
         }
         historyEvents = []
+        isUsingSampleHistory = false
         historyError = nil
         historyProgress = 0
         isLoadingHistory = true
         requestHistoryPage(cursor: 0)
+    }
+
+    func loadSampleHistory() {
+        stopHistorySync(error: nil)
+        historyEvents = SampleHistoryGenerator.events()
+        historyError = nil
+        historyProgress = 1
+        lastHistorySync = Date()
+        isUsingSampleHistory = true
     }
 
     private func requestHistoryPage(cursor: Int) {

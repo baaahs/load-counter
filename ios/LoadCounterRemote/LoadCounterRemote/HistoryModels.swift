@@ -207,3 +207,64 @@ enum HistoryAnalytics {
         }
     }
 }
+
+enum SampleHistoryGenerator {
+    static func events(now: Date = Date(), calendar: Calendar = .current) -> [LoadCounterHistoryEvent] {
+        var events: [LoadCounterHistoryEvent] = []
+        var count = 40
+        let today = calendar.startOfDay(for: now)
+
+        for dayOffset in -44...0 {
+            guard let day = calendar.date(byAdding: .day, value: dayOffset, to: today) else { continue }
+            let pattern = abs(dayOffset * 17 + 11)
+            let dailyCount = 8 + pattern % 18
+
+            if dayOffset.isMultiple(of: 12), let learningDate = calendar.date(byAdding: .hour, value: 9, to: day) {
+                events.append(event(at: learningDate, kind: "l", oldCount: nil, newCount: nil, source: "sample"))
+            }
+
+            for index in 0..<dailyCount {
+                let hour = 10 + (index * 7 + pattern) % 9
+                let minute = (index * 13 + pattern * 3) % 60
+                guard
+                    let hourDate = calendar.date(byAdding: .hour, value: hour, to: day),
+                    let eventDate = calendar.date(byAdding: .minute, value: minute, to: hourDate),
+                    eventDate <= now
+                else { continue }
+                let oldCount = count
+                count += 1
+                events.append(event(at: eventDate, kind: "c", oldCount: oldCount, newCount: count, source: "sensors"))
+            }
+
+            if dayOffset.isMultiple(of: 9), let manualDate = calendar.date(byAdding: .hour, value: 19, to: day), manualDate <= now {
+                let oldCount = count
+                count += 3
+                events.append(event(at: manualDate, kind: "m", oldCount: oldCount, newCount: count, source: "iphone"))
+            }
+
+            if dayOffset == -28, let resetDate = calendar.date(byAdding: .hour, value: 20, to: day) {
+                let oldCount = count
+                count = 0
+                events.append(event(at: resetDate, kind: "r", oldCount: oldCount, newCount: count, source: "iphone"))
+            }
+        }
+
+        return events.sorted { $0.date > $1.date }
+    }
+
+    private static func event(
+        at date: Date,
+        kind: String,
+        oldCount: Int?,
+        newCount: Int?,
+        source: String
+    ) -> LoadCounterHistoryEvent {
+        LoadCounterHistoryEvent(
+            timestamp: date.timeIntervalSince1970,
+            kindCode: kind,
+            oldCount: oldCount,
+            newCount: newCount,
+            source: source
+        )
+    }
+}
