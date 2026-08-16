@@ -125,13 +125,6 @@ enum HistoryGrouping: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-enum HistoryChartStyle: String, CaseIterable, Identifiable {
-    case bars = "Bars"
-    case line = "Line"
-
-    var id: String { rawValue }
-}
-
 enum HistoryValueMode: String, CaseIterable, Identifiable {
     case interval = "Per Interval"
     case cumulative = "Cumulative"

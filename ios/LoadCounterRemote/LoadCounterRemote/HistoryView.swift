@@ -6,7 +6,6 @@ struct HistoryView: View {
 
     @State private var range: HistoryRange = .sevenDays
     @State private var grouping: HistoryGrouping = .hour
-    @State private var chartStyle: HistoryChartStyle = .bars
     @State private var valueMode: HistoryValueMode = .interval
     @State private var includedKinds = Set(HistoryEventKind.allCases)
     @State private var exportedReport: ExportedHistoryReport?
@@ -211,16 +210,6 @@ struct HistoryView: View {
                 Divider()
                     .padding(.leading, 48)
 
-                customizationMenu(
-                    title: "Chart Style",
-                    systemImage: chartStyle == .bars ? "chart.bar" : "chart.xyaxis.line",
-                    options: HistoryChartStyle.allCases,
-                    selection: $chartStyle
-                )
-
-                Divider()
-                    .padding(.leading, 48)
-
                 Menu {
                     ForEach(HistoryEventKind.allCases) { kind in
                         Toggle(kind.shortTitle, isOn: kindBinding(kind))
@@ -271,7 +260,7 @@ struct HistoryView: View {
                 emptyChart("No automatic counts in this view")
             } else {
                 Chart(activityBuckets) { bucket in
-                    if chartStyle == .bars {
+                    if valueMode == .interval {
                         BarMark(
                             x: .value("Time", bucket.date),
                             y: .value("Counts", bucket.count)
@@ -285,13 +274,6 @@ struct HistoryView: View {
                         )
                         .foregroundStyle(.purple)
                         .lineStyle(StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
-                        .interpolationMethod(.linear)
-
-                        AreaMark(
-                            x: .value("Time", bucket.date),
-                            y: .value("Counts", bucket.count)
-                        )
-                        .foregroundStyle(.linearGradient(colors: [.purple.opacity(0.28), .purple.opacity(0.02)], startPoint: .top, endPoint: .bottom))
                         .interpolationMethod(.linear)
                     }
                 }
@@ -336,22 +318,12 @@ struct HistoryView: View {
             } else {
                 Chart {
                     ForEach(counterChangeBuckets) { bucket in
-                        if chartStyle == .bars {
-                            BarMark(
-                                x: .value("Time", bucket.date),
-                                y: .value("Change", bucket.count)
-                            )
-                            .foregroundStyle(bucket.count < 0 ? Color.red.gradient : Color.indigo.gradient)
-                            .cornerRadius(3)
-                        } else {
-                            LineMark(
-                                x: .value("Time", bucket.date),
-                                y: .value("Change", bucket.count)
-                            )
-                            .foregroundStyle(.indigo)
-                            .lineStyle(StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
-                            .interpolationMethod(.linear)
-                        }
+                        BarMark(
+                            x: .value("Time", bucket.date),
+                            y: .value("Change", bucket.count)
+                        )
+                        .foregroundStyle(bucket.count < 0 ? Color.red.gradient : Color.indigo.gradient)
+                        .cornerRadius(3)
                     }
 
                     RuleMark(y: .value("Zero", 0))
@@ -548,7 +520,6 @@ struct HistoryView: View {
                 statistics: statistics,
                 range: range,
                 grouping: grouping,
-                chartStyle: chartStyle,
                 valueMode: valueMode
             )
             exportedReport = ExportedHistoryReport(url: url)

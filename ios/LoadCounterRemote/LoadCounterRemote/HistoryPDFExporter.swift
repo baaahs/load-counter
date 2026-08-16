@@ -34,7 +34,6 @@ enum HistoryPDFExporter {
         statistics: HistoryStatistics,
         range: HistoryRange,
         grouping: HistoryGrouping,
-        chartStyle: HistoryChartStyle,
         valueMode: HistoryValueMode
     ) throws -> URL {
         let formatter = DateFormatter()
@@ -51,7 +50,6 @@ enum HistoryPDFExporter {
                 statistics: statistics,
                 range: range,
                 grouping: grouping,
-                chartStyle: chartStyle,
                 valueMode: valueMode
             )
             drawEventPages(context: context, events: events)
@@ -66,7 +64,6 @@ enum HistoryPDFExporter {
         statistics: HistoryStatistics,
         range: HistoryRange,
         grouping: HistoryGrouping,
-        chartStyle: HistoryChartStyle,
         valueMode: HistoryValueMode
     ) {
         context.beginPage()
@@ -92,7 +89,13 @@ enum HistoryPDFExporter {
 
         let activityTitle = valueMode == .cumulative ? "Cumulative Activity" : "Activity per Interval"
         drawText(activityTitle, in: CGRect(x: margin, y: 294, width: 260, height: 24), font: .systemFont(ofSize: 17, weight: .semibold), color: ink)
-        drawBucketChart(buckets, style: chartStyle, color: purple, rect: CGRect(x: margin, y: 326, width: pageRect.width - margin * 2, height: 155), context: cg)
+        drawBucketChart(
+            buckets,
+            usesLine: valueMode == .cumulative,
+            color: purple,
+            rect: CGRect(x: margin, y: 326, width: pageRect.width - margin * 2, height: 155),
+            context: cg
+        )
 
         if valueMode == .cumulative {
             drawText("Counter Value", in: CGRect(x: margin, y: 510, width: 260, height: 24), font: .systemFont(ofSize: 17, weight: .semibold), color: ink)
@@ -101,7 +104,7 @@ enum HistoryPDFExporter {
             drawText("Counter Change", in: CGRect(x: margin, y: 510, width: 260, height: 24), font: .systemFont(ofSize: 17, weight: .semibold), color: ink)
             drawBucketChart(
                 HistoryAnalytics.counterChangeBuckets(for: events, grouping: grouping),
-                style: chartStyle,
+                usesLine: false,
                 color: indigo,
                 rect: CGRect(x: margin, y: 542, width: pageRect.width - margin * 2, height: 155),
                 context: cg
@@ -173,7 +176,7 @@ enum HistoryPDFExporter {
 
     private static func drawBucketChart(
         _ buckets: [HistoryBucket],
-        style: HistoryChartStyle,
+        usesLine: Bool,
         color: UIColor,
         rect: CGRect,
         context: CGContext
@@ -200,7 +203,7 @@ enum HistoryPDFExporter {
         context.addLine(to: CGPoint(x: chart.maxX, y: zeroY))
         context.strokePath()
         let slotWidth = chart.width / CGFloat(max(buckets.count, 1))
-        if style == .bars {
+        if !usesLine {
             for (index, bucket) in buckets.enumerated() {
                 let valueY = yPosition(bucket.count)
                 let width = min(24, max(2, slotWidth * 0.64))
