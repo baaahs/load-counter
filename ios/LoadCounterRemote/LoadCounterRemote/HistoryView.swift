@@ -5,8 +5,9 @@ struct HistoryView: View {
     @ObservedObject var bluetooth: BluetoothController
 
     @State private var range: HistoryRange = .sevenDays
-    @State private var grouping: HistoryGrouping = .day
+    @State private var grouping: HistoryGrouping = .hour
     @State private var chartStyle: HistoryChartStyle = .bars
+    @State private var valueMode: HistoryValueMode = .interval
     @State private var includedKinds = Set(HistoryEventKind.allCases)
     @State private var exportedReport: ExportedHistoryReport?
     @State private var exportError: String?
@@ -19,16 +20,27 @@ struct HistoryView: View {
         )
     }
 
-    private var buckets: [HistoryBucket] {
+    private var intervalBuckets: [HistoryBucket] {
         HistoryAnalytics.buckets(for: filteredEvents, grouping: grouping)
     }
 
+    private var activityBuckets: [HistoryBucket] {
+        switch valueMode {
+        case .interval: return intervalBuckets
+        case .cumulative: return HistoryAnalytics.cumulativeBuckets(intervalBuckets)
+        }
+    }
+
     private var statistics: HistoryStatistics {
-        HistoryAnalytics.statistics(for: filteredEvents, buckets: buckets)
+        HistoryAnalytics.statistics(for: filteredEvents, buckets: intervalBuckets)
     }
 
     private var counterSeries: [LoadCounterHistoryEvent] {
         HistoryAnalytics.counterSeries(filteredEvents)
+    }
+
+    private var counterChangeBuckets: [HistoryBucket] {
+        HistoryAnalytics.counterChangeBuckets(for: filteredEvents, grouping: grouping)
     }
 
     var body: some View {
@@ -165,6 +177,13 @@ struct HistoryView: View {
             }
             .pickerStyle(.segmented)
 
+            Picker("Values", selection: $valueMode) {
+                ForEach(HistoryValueMode.allCases) { option in
+                    Text(option.rawValue).tag(option)
+                }
+            }
+            .pickerStyle(.segmented)
+
             HStack(spacing: 12) {
                 customizationMenu(
                     title: grouping.rawValue,
@@ -220,11 +239,11 @@ struct HistoryView: View {
 
     private var activitySection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            sectionTitle("Activity", detail: grouping.rawValue)
-            if buckets.isEmpty {
+            sectionTitle("Activity", detail: "\(valueMode.rawValue) · \(grouping.rawValue)")
+            if activityBuckets.isEmpty {
                 emptyChart("No automatic counts in this view")
             } else {
-                Chart(buckets) { bucket in
+                Chart(activityBuckets) { bucket in
                     if chartStyle == .bars {
                         BarMark(
                             x: .value("Time", bucket.date),
@@ -239,14 +258,14 @@ struct HistoryView: View {
                         )
                         .foregroundStyle(.purple)
                         .lineStyle(StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
-                        .interpolationMethod(.catmullRom)
+                        .interpolationMethod(.linear)
 
                         AreaMark(
                             x: .value("Time", bucket.date),
                             y: .value("Counts", bucket.count)
                         )
                         .foregroundStyle(.linearGradient(colors: [.purple.opacity(0.28), .purple.opacity(0.02)], startPoint: .top, endPoint: .bottom))
-                        .interpolationMethod(.catmullRom)
+                        .interpolationMethod(.linear)
                     }
                 }
                 .chartYAxis { AxisMarks(position: .leading) }
@@ -260,24 +279,56 @@ struct HistoryView: View {
 
     private var counterSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            sectionTitle("Counter", detail: "Recorded value")
-            if counterSeries.isEmpty {
-                emptyChart("No counter values in this view")
-            } else {
-                Chart(counterSeries) { event in
-                    LineMark(
-                        x: .value("Time", event.date),
-                        y: .value("Count", event.newCount ?? 0)
-                    )
-                    .foregroundStyle(.indigo)
-                    .lineStyle(StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
+            sectionTitle("Counter", detail: valueMode == .cumulative ? "Recorded value" : "Net change · \(grouping.rawValue)")
+            if valueMode == .cumulative {
+                if counterSeries.isEmpty {
+                    emptyChart("No counter values in this view")
+                } else {
+                    Chart(counterSeries) { event in
+                        LineMark(
+                            x: .value("Time", event.date),
+                            y: .value("Count", event.newCount ?? 0)
+                        )
+                        .foregroundStyle(.indigo)
+                        .lineStyle(StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
+                        .interpolationMethod(.linear)
 
-                    PointMark(
-                        x: .value("Time", event.date),
-                        y: .value("Count", event.newCount ?? 0)
-                    )
-                    .foregroundStyle(color(for: event.kind))
-                    .symbolSize(counterSeries.count > 80 ? 12 : 34)
+                        PointMark(
+                            x: .value("Time", event.date),
+                            y: .value("Count", event.newCount ?? 0)
+                        )
+                        .foregroundStyle(color(for: event.kind))
+                        .symbolSize(counterSeries.count > 80 ? 12 : 34)
+                    }
+                    .chartYAxis { AxisMarks(position: .leading) }
+                    .chartXAxis { AxisMarks(values: .automatic(desiredCount: 5)) }
+                    .frame(height: 220)
+                }
+            } else if counterChangeBuckets.isEmpty {
+                emptyChart("No counter changes in this view")
+            } else {
+                Chart {
+                    ForEach(counterChangeBuckets) { bucket in
+                        if chartStyle == .bars {
+                            BarMark(
+                                x: .value("Time", bucket.date),
+                                y: .value("Change", bucket.count)
+                            )
+                            .foregroundStyle(bucket.count < 0 ? Color.red.gradient : Color.indigo.gradient)
+                            .cornerRadius(3)
+                        } else {
+                            LineMark(
+                                x: .value("Time", bucket.date),
+                                y: .value("Change", bucket.count)
+                            )
+                            .foregroundStyle(.indigo)
+                            .lineStyle(StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
+                            .interpolationMethod(.linear)
+                        }
+                    }
+
+                    RuleMark(y: .value("Zero", 0))
+                        .foregroundStyle(.secondary.opacity(0.35))
                 }
                 .chartYAxis { AxisMarks(position: .leading) }
                 .chartXAxis { AxisMarks(values: .automatic(desiredCount: 5)) }
@@ -417,7 +468,7 @@ struct HistoryView: View {
 
     private func bucketDateText(_ date: Date) -> String {
         switch grouping {
-        case .hour:
+        case .minute, .hour:
             return date.formatted(date: .abbreviated, time: .shortened)
         case .day, .week:
             return date.formatted(date: .abbreviated, time: .omitted)
@@ -428,11 +479,12 @@ struct HistoryView: View {
         do {
             let url = try HistoryPDFExporter.create(
                 events: filteredEvents,
-                buckets: buckets,
+                buckets: activityBuckets,
                 statistics: statistics,
                 range: range,
                 grouping: grouping,
-                chartStyle: chartStyle
+                chartStyle: chartStyle,
+                valueMode: valueMode
             )
             exportedReport = ExportedHistoryReport(url: url)
         } catch {

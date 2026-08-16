@@ -117,6 +117,7 @@ enum HistoryRange: String, CaseIterable, Identifiable {
 }
 
 enum HistoryGrouping: String, CaseIterable, Identifiable {
+    case minute = "1 Minute"
     case hour = "Hourly"
     case day = "Daily"
     case week = "Weekly"
@@ -127,6 +128,13 @@ enum HistoryGrouping: String, CaseIterable, Identifiable {
 enum HistoryChartStyle: String, CaseIterable, Identifiable {
     case bars = "Bars"
     case line = "Line"
+
+    var id: String { rawValue }
+}
+
+enum HistoryValueMode: String, CaseIterable, Identifiable {
+    case interval = "Per Interval"
+    case cumulative = "Cumulative"
 
     var id: String { rawValue }
 }
@@ -196,8 +204,37 @@ enum HistoryAnalytics {
         events.filter { $0.newCount != nil }.sorted { $0.date < $1.date }
     }
 
+    static func cumulativeBuckets(_ buckets: [HistoryBucket]) -> [HistoryBucket] {
+        var total = 0
+        return buckets.sorted { $0.date < $1.date }.map { bucket in
+            total += bucket.count
+            return HistoryBucket(date: bucket.date, count: total)
+        }
+    }
+
+    static func counterChangeBuckets(
+        for events: [LoadCounterHistoryEvent],
+        grouping: HistoryGrouping,
+        calendar: Calendar = .current
+    ) -> [HistoryBucket] {
+        let changes = events.compactMap { event -> (date: Date, change: Int)? in
+            guard let oldCount = event.oldCount, let newCount = event.newCount else { return nil }
+            return (event.date, newCount - oldCount)
+        }
+        let grouped = Dictionary(grouping: changes) { change in
+            bucketStart(for: change.date, grouping: grouping, calendar: calendar)
+        }
+        return grouped
+            .map { date, changes in
+                HistoryBucket(date: date, count: changes.reduce(0) { $0 + $1.change })
+            }
+            .sorted { $0.date < $1.date }
+    }
+
     private static func bucketStart(for date: Date, grouping: HistoryGrouping, calendar: Calendar) -> Date {
         switch grouping {
+        case .minute:
+            return calendar.dateInterval(of: .minute, for: date)?.start ?? date
         case .hour:
             return calendar.dateInterval(of: .hour, for: date)?.start ?? date
         case .day:
@@ -217,23 +254,32 @@ enum SampleHistoryGenerator {
         for dayOffset in -44...0 {
             guard let day = calendar.date(byAdding: .day, value: dayOffset, to: today) else { continue }
             let pattern = abs(dayOffset * 17 + 11)
-            let dailyCount = 8 + pattern % 18
+            let burstCount = 1 + pattern % 3
 
-            if dayOffset.isMultiple(of: 12), let learningDate = calendar.date(byAdding: .hour, value: 9, to: day) {
+            if dayOffset.isMultiple(of: 12),
+               let learningDate = calendar.date(byAdding: .hour, value: 9, to: day),
+               learningDate <= now {
                 events.append(event(at: learningDate, kind: "l", oldCount: nil, newCount: nil, source: "sample"))
             }
 
-            for index in 0..<dailyCount {
-                let hour = 10 + (index * 7 + pattern) % 9
-                let minute = (index * 13 + pattern * 3) % 60
+            for burstIndex in 0..<burstCount {
+                let hour = 11 + burstIndex * 3
+                let minute = (pattern * 3 + burstIndex * 11) % 35
+                let peopleCount = 8 + (pattern + burstIndex * 7) % 13
                 guard
                     let hourDate = calendar.date(byAdding: .hour, value: hour, to: day),
-                    let eventDate = calendar.date(byAdding: .minute, value: minute, to: hourDate),
-                    eventDate <= now
+                    let burstStart = calendar.date(byAdding: .minute, value: minute, to: hourDate)
                 else { continue }
-                let oldCount = count
-                count += 1
-                events.append(event(at: eventDate, kind: "c", oldCount: oldCount, newCount: count, source: "sensors"))
+
+                for personIndex in 0..<peopleCount {
+                    guard
+                        let eventDate = calendar.date(byAdding: .second, value: personIndex * 20, to: burstStart),
+                        eventDate <= now
+                    else { continue }
+                    let oldCount = count
+                    count += 1
+                    events.append(event(at: eventDate, kind: "c", oldCount: oldCount, newCount: count, source: "sensors"))
+                }
             }
 
             if dayOffset.isMultiple(of: 9), let manualDate = calendar.date(byAdding: .hour, value: 19, to: day), manualDate <= now {

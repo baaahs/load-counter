@@ -34,7 +34,8 @@ enum HistoryPDFExporter {
         statistics: HistoryStatistics,
         range: HistoryRange,
         grouping: HistoryGrouping,
-        chartStyle: HistoryChartStyle
+        chartStyle: HistoryChartStyle,
+        valueMode: HistoryValueMode
     ) throws -> URL {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd-HHmm"
@@ -50,7 +51,8 @@ enum HistoryPDFExporter {
                 statistics: statistics,
                 range: range,
                 grouping: grouping,
-                chartStyle: chartStyle
+                chartStyle: chartStyle,
+                valueMode: valueMode
             )
             drawEventPages(context: context, events: events)
         }
@@ -64,7 +66,8 @@ enum HistoryPDFExporter {
         statistics: HistoryStatistics,
         range: HistoryRange,
         grouping: HistoryGrouping,
-        chartStyle: HistoryChartStyle
+        chartStyle: HistoryChartStyle,
+        valueMode: HistoryValueMode
     ) {
         context.beginPage()
         let cg = context.cgContext
@@ -75,7 +78,7 @@ enum HistoryPDFExporter {
 
         drawText("LoadCounter History", in: CGRect(x: margin, y: 38, width: 420, height: 34), font: .systemFont(ofSize: 27, weight: .bold), color: ink)
         drawText(
-            "\(range.rawValue) · \(grouping.rawValue) · Generated \(Date().formatted(date: .abbreviated, time: .shortened))",
+            "\(range.rawValue) · \(grouping.rawValue) · \(valueMode.rawValue) · Generated \(Date().formatted(date: .abbreviated, time: .shortened))",
             in: CGRect(x: margin, y: 76, width: 520, height: 20),
             font: .systemFont(ofSize: 11, weight: .regular),
             color: secondaryInk
@@ -87,11 +90,23 @@ enum HistoryPDFExporter {
         drawStatTile(title: "MANUAL CHANGES", value: "\(statistics.manualChanges)", color: blue, rect: CGRect(x: margin, y: 198, width: tileWidth, height: 70))
         drawStatTile(title: "RESETS", value: "\(statistics.resets)", color: red, rect: CGRect(x: margin + tileWidth + 12, y: 198, width: tileWidth, height: 70))
 
-        drawText("Activity", in: CGRect(x: margin, y: 294, width: 260, height: 24), font: .systemFont(ofSize: 17, weight: .semibold), color: ink)
-        drawActivityChart(buckets, style: chartStyle, rect: CGRect(x: margin, y: 326, width: pageRect.width - margin * 2, height: 155), context: cg)
+        let activityTitle = valueMode == .cumulative ? "Cumulative Activity" : "Activity per Interval"
+        drawText(activityTitle, in: CGRect(x: margin, y: 294, width: 260, height: 24), font: .systemFont(ofSize: 17, weight: .semibold), color: ink)
+        drawBucketChart(buckets, style: chartStyle, color: purple, rect: CGRect(x: margin, y: 326, width: pageRect.width - margin * 2, height: 155), context: cg)
 
-        drawText("Counter Value", in: CGRect(x: margin, y: 510, width: 260, height: 24), font: .systemFont(ofSize: 17, weight: .semibold), color: ink)
-        drawCounterChart(HistoryAnalytics.counterSeries(events), rect: CGRect(x: margin, y: 542, width: pageRect.width - margin * 2, height: 155), context: cg)
+        if valueMode == .cumulative {
+            drawText("Counter Value", in: CGRect(x: margin, y: 510, width: 260, height: 24), font: .systemFont(ofSize: 17, weight: .semibold), color: ink)
+            drawCounterChart(HistoryAnalytics.counterSeries(events), rect: CGRect(x: margin, y: 542, width: pageRect.width - margin * 2, height: 155), context: cg)
+        } else {
+            drawText("Counter Change", in: CGRect(x: margin, y: 510, width: 260, height: 24), font: .systemFont(ofSize: 17, weight: .semibold), color: ink)
+            drawBucketChart(
+                HistoryAnalytics.counterChangeBuckets(for: events, grouping: grouping),
+                style: chartStyle,
+                color: indigo,
+                rect: CGRect(x: margin, y: 542, width: pageRect.width - margin * 2, height: 155),
+                context: cg
+            )
+        }
 
         let peakText: String
         if let peak = statistics.busiestBucket {
@@ -156,30 +171,56 @@ enum HistoryPDFExporter {
         drawText(title, in: CGRect(x: rect.minX + 18, y: rect.minY + 44, width: rect.width - 32, height: 16), font: .systemFont(ofSize: 9, weight: .semibold), color: secondaryInk)
     }
 
-    private static func drawActivityChart(_ buckets: [HistoryBucket], style: HistoryChartStyle, rect: CGRect, context: CGContext) {
+    private static func drawBucketChart(
+        _ buckets: [HistoryBucket],
+        style: HistoryChartStyle,
+        color: UIColor,
+        rect: CGRect,
+        context: CGContext
+    ) {
         drawChartBackground(rect, context: context)
-        guard let maxValue = buckets.map(\.count).max(), maxValue > 0 else {
+        guard
+            let minimum = buckets.map(\.count).min(),
+            let maximum = buckets.map(\.count).max()
+        else {
             drawEmptyChartText("No activity", rect: rect)
             return
         }
         let chart = rect.insetBy(dx: 14, dy: 14)
+        let lowerBound = min(0, minimum)
+        let upperBound = max(0, maximum)
+        let spread = max(upperBound - lowerBound, 1)
+        let yPosition: (Int) -> CGFloat = { value in
+            chart.maxY - chart.height * CGFloat(value - lowerBound) / CGFloat(spread)
+        }
+        let zeroY = yPosition(0)
+        context.setStrokeColor(secondaryInk.withAlphaComponent(0.35).cgColor)
+        context.setLineWidth(0.75)
+        context.move(to: CGPoint(x: chart.minX, y: zeroY))
+        context.addLine(to: CGPoint(x: chart.maxX, y: zeroY))
+        context.strokePath()
         let slotWidth = chart.width / CGFloat(max(buckets.count, 1))
         if style == .bars {
             for (index, bucket) in buckets.enumerated() {
-                let height = chart.height * CGFloat(bucket.count) / CGFloat(maxValue)
+                let valueY = yPosition(bucket.count)
                 let width = min(24, max(2, slotWidth * 0.64))
-                let bar = CGRect(x: chart.minX + CGFloat(index) * slotWidth + (slotWidth - width) / 2, y: chart.maxY - height, width: width, height: height)
-                purple.setFill()
+                let bar = CGRect(
+                    x: chart.minX + CGFloat(index) * slotWidth + (slotWidth - width) / 2,
+                    y: min(valueY, zeroY),
+                    width: width,
+                    height: max(abs(zeroY - valueY), 1)
+                )
+                (bucket.count < 0 ? red : color).setFill()
                 UIBezierPath(roundedRect: bar, cornerRadius: min(3, width / 2)).fill()
             }
         } else {
             let path = UIBezierPath()
             for (index, bucket) in buckets.enumerated() {
                 let x = chart.minX + (buckets.count == 1 ? chart.width / 2 : CGFloat(index) * chart.width / CGFloat(buckets.count - 1))
-                let y = chart.maxY - chart.height * CGFloat(bucket.count) / CGFloat(maxValue)
+                let y = yPosition(bucket.count)
                 index == 0 ? path.move(to: CGPoint(x: x, y: y)) : path.addLine(to: CGPoint(x: x, y: y))
             }
-            purple.setStroke()
+            color.setStroke()
             path.lineWidth = 3
             path.lineJoinStyle = .round
             path.lineCapStyle = .round
