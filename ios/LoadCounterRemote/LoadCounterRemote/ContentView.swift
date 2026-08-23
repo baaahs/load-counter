@@ -632,23 +632,25 @@ struct ContentView: View {
         if editingNumericField != .counter {
             counterText = "\(state.counter)"
         }
-        if editingNumericField != .triggerDistance {
-            triggerDistanceCm = state.settings.triggerDistanceCm
+        if let settings = state.settings {
+            if editingNumericField != .triggerDistance {
+                triggerDistanceCm = settings.triggerDistanceCm
+            }
+            if editingNumericField != .neutralMargin {
+                neutralMarginCm = settings.neutralMarginCm
+            }
+            if editingNumericField != .timeout {
+                timeoutSeconds = Double(settings.timeoutMs) / 1000
+            }
+            if editingNumericField != .cooldown {
+                cooldownSeconds = Double(settings.cooldownMs) / 1000
+            }
+            if editingNumericField != .brightness {
+                brightness = Double(settings.brightnessPercent)
+            }
+            sensorOrder = settings.sensorOrder
+            debugMode = settings.debugMode
         }
-        if editingNumericField != .neutralMargin {
-            neutralMarginCm = state.settings.neutralMarginCm
-        }
-        if editingNumericField != .timeout {
-            timeoutSeconds = Double(state.settings.timeoutMs) / 1000
-        }
-        if editingNumericField != .cooldown {
-            cooldownSeconds = Double(state.settings.cooldownMs) / 1000
-        }
-        if editingNumericField != .brightness {
-            brightness = Double(state.settings.brightnessPercent)
-        }
-        sensorOrder = state.settings.sensorOrder
-        debugMode = state.settings.debugMode
     }
 
     private func openMatrixMenu() {

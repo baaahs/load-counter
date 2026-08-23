@@ -205,6 +205,47 @@ class LoadCounterBleTests(unittest.TestCase):
         self.assertEqual(payload["counter"], 5)
         self.assertFalse(payload["learning"]["active"])
 
+    def test_state_payload_stays_below_gatt_limit_during_learning(self):
+        settings = {
+            "trigger_distance_cm": 150,
+            "neutral_margin_cm": 8,
+            "timeout_ms": 2000,
+            "cooldown_ms": 10000,
+            "brightness_percent": 100,
+            "debug_mode": False,
+            "sensor_order": "A/B",
+            "base_distance_1_cm": 50,
+            "base_distance_2_cm": 28,
+        }
+        learning = {
+            "active": True,
+            "event_count": 12,
+            "phase": "ready",
+            "status": "Ready",
+            "trigger_distance_cm": 150,
+            "neutral_margin_cm": 8,
+            "timeout_ms": 2000,
+            "cooldown_ms": 10000,
+            "sensor_order": "A/B",
+            "base_distance_1_cm": 50,
+            "base_distance_2_cm": 28,
+        }
+        with mock.patch.object(self.ble, "service_status", return_value="active"), mock.patch.object(
+            self.ble,
+            "load_counter",
+            return_value=710,
+        ), mock.patch.object(self.ble, "load_settings", return_value=settings), mock.patch.object(
+            self.ble,
+            "load_learning_state",
+            return_value=learning,
+        ):
+            payload = self.ble.state_payload("ready")
+
+        encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        self.assertLessEqual(len(encoded), 512)
+        self.assertNotIn("settings", payload)
+        self.assertEqual(payload["learning"], learning)
+
     def test_apply_service_command_stops_program_without_stopping_ble(self):
         calls = []
 

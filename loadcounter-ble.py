@@ -506,17 +506,25 @@ def history_page_payload(events, cursor, maximum_bytes=MAX_HISTORY_PAGE_BYTES):
 def state_payload(status_text):
     program_status = service_status(LOADCOUNTER_PROGRAM_SERVICE)
     program_active = program_status == "active"
-    return {
+    learning = load_learning_state() if program_active else default_learning_state()
+    payload = {
         "status": status_text,
         "program": {
             "active": program_active,
             "status": program_status,
         },
         "counter": load_counter(),
-        "settings": load_settings(),
-        "learning": load_learning_state() if program_active else default_learning_state(),
         "updated_at": time.time(),
     }
+    if learning["active"]:
+        payload["learning"] = learning
+    else:
+        payload["settings"] = load_settings()
+        payload["learning"] = {
+            key: learning[key]
+            for key in ("active", "event_count", "phase", "status")
+        }
+    return payload
 
 
 class Application(ServiceInterface):

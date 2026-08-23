@@ -63,7 +63,7 @@ struct LoadCounterDeviceState: Codable, Equatable {
     let status: String
     let program: LoadCounterProgramState?
     let counter: Int
-    let settings: LoadCounterSettings
+    let settings: LoadCounterSettings?
     let learning: LoadCounterLearningState?
     let updatedAt: Double
 
