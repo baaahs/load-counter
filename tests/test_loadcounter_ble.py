@@ -9,6 +9,10 @@ from unittest import mock
 
 
 def load_ble_module():
+    class FakeServiceInterface:
+        def __init__(self, *args, **kwargs):
+            pass
+
     sys.modules.setdefault("dbus_next", types.SimpleNamespace(Variant=lambda signature, value: value))
     sys.modules.setdefault(
         "dbus_next.aio",
@@ -25,7 +29,7 @@ def load_ble_module():
     sys.modules.setdefault(
         "dbus_next.service",
         types.SimpleNamespace(
-            ServiceInterface=object,
+            ServiceInterface=FakeServiceInterface,
             dbus_property=lambda *args, **kwargs: (lambda function: property(function)),
             method=lambda *args, **kwargs: (lambda function: function),
         ),
@@ -134,6 +138,25 @@ class LoadCounterBleTests(unittest.TestCase):
             cursor = page["next_cursor"]
 
         self.assertEqual(received, events)
+
+    def test_status_characteristic_supports_long_reads_by_offset(self):
+        payload = {
+            "learning": {
+                "active": True,
+                "status": "Ready",
+                "samples": "x" * 600,
+            }
+        }
+        expected = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        self.assertGreater(len(expected), 512)
+
+        with mock.patch.object(self.ble, "state_payload", return_value=payload):
+            characteristic = self.ble.StatusCharacteristic()
+            first_read = characteristic.ReadValue({})
+            continued_read = characteristic.ReadValue({"offset": types.SimpleNamespace(value=512)})
+
+        self.assertEqual(first_read, expected)
+        self.assertEqual(continued_read, expected[512:])
 
     def test_load_learning_state_sanitizes_saved_values(self):
         with tempfile.TemporaryDirectory() as temp_dir:

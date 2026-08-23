@@ -411,6 +411,16 @@ def bytes_for_text(text):
     return text.encode("utf-8")
 
 
+def bytes_for_gatt_read(data, options):
+    raw_offset = options.get("offset", 0)
+    offset = getattr(raw_offset, "value", raw_offset)
+    try:
+        offset = max(0, int(offset))
+    except (TypeError, ValueError):
+        offset = 0
+    return data[offset:]
+
+
 def compact_history_event(raw_event):
     if not isinstance(raw_event, dict):
         return None
@@ -623,7 +633,8 @@ class StatusCharacteristic(ServiceInterface):
 
     @method()
     def ReadValue(self, options: "a{sv}") -> "ay":
-        return bytes_for_text(json.dumps(state_payload(self.text), separators=(",", ":"), sort_keys=True))
+        data = bytes_for_text(json.dumps(state_payload(self.text), separators=(",", ":"), sort_keys=True))
+        return bytes_for_gatt_read(data, options)
 
     def get_properties(self):
         return {
@@ -662,7 +673,8 @@ class HistoryCharacteristic(ServiceInterface):
     @method()
     def ReadValue(self, options: "a{sv}") -> "ay":
         page = history_page_payload(self.events, self.cursor)
-        return bytes_for_text(json.dumps(page, separators=(",", ":"), sort_keys=True))
+        data = bytes_for_text(json.dumps(page, separators=(",", ":"), sort_keys=True))
+        return bytes_for_gatt_read(data, options)
 
     def get_properties(self):
         return {
