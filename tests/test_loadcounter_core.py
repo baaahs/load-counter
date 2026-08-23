@@ -83,7 +83,7 @@ class LoadCounterCoreTests(unittest.TestCase):
 
         result, status = self.core.analyze_learning_event(learning, self.core.default_settings())
 
-        self.assertEqual(status, "LEARN OK")
+        self.assertEqual(status, "Learned event 1")
         self.assertEqual(result["sensor_order"], self.core.SENSOR_ORDER_AB)
         self.assertEqual(result["timeout_ms"], 1400)
         self.assertEqual(result["base_distance_1_cm"], 100)
@@ -115,9 +115,36 @@ class LoadCounterCoreTests(unittest.TestCase):
             self.core.log_event = previous_logger
 
         self.assertTrue(changed)
-        self.assertEqual(status, "LEARN OK")
+        self.assertEqual(status, "Learned event 1")
         self.assertEqual(settings, original_settings)
         self.assertNotEqual(learning["draft_settings"]["trigger_distance_cm"], original_settings["trigger_distance_cm"])
+
+    def test_learning_accepts_long_range_neutral_readings_and_a_delayed_tap(self):
+        settings = self.core.default_settings()
+        settings["base_distance_1_cm"] = 1120
+        settings["base_distance_2_cm"] = 234
+        learning = self.core.default_learning_state()
+        learning.update({
+            "event_count": 1,
+            "event_at": 10.0,
+            "samples": [
+                {"t": 1.0, "d1": 1120, "d2": 234},
+                {"t": 5.0, "d1": 1120, "d2": 234},
+                {"t": 7.0, "d1": 82, "d2": 234},
+                {"t": 7.5, "d1": 90, "d2": 87},
+                {"t": 8.0, "d1": 1120, "d2": 74},
+                {"t": 9.0, "d1": 1120, "d2": 234},
+                {"t": 12.0, "d1": 1120, "d2": 234},
+            ],
+        })
+
+        result, status = self.core.analyze_learning_event(learning, settings)
+
+        self.assertEqual(status, "Learned event 1")
+        self.assertEqual(result["sensor_order"], self.core.SENSOR_ORDER_AB)
+        self.assertEqual(result["base_distance_1_cm"], 1120)
+        self.assertEqual(result["base_distance_2_cm"], 234)
+        self.assertEqual(result["trigger_distance_cm"], 80)
 
     def test_learning_end_saves_draft_and_cancel_discards_it(self):
         settings = self.core.default_settings()

@@ -52,7 +52,7 @@ MIN_BRIGHTNESS_PERCENT = 1
 MAX_BRIGHTNESS_PERCENT = 100
 MAX_COUNTER = 999999
 CALIBRATION_SECONDS = 10.0
-LEARNING_EVENT_EARLY_SECONDS = 1.5
+LEARNING_EVENT_EARLY_SECONDS = 4.0
 LEARNING_EVENT_LATE_SECONDS = 2.0
 LEARNING_BASELINE_LOOKBACK_SECONDS = 6.0
 LEARNING_SAMPLE_HISTORY_SECONDS = 20.0
@@ -658,7 +658,7 @@ def reset_learning_after_calibration(learning, calibrated_settings):
 
 
 def valid_learning_value(value):
-    return value is not None and 2 <= value <= 800
+    return value is not None and 2 <= value <= 3000
 
 
 def learning_values(samples, key, start_at=None, end_at=None):
@@ -691,7 +691,7 @@ def analyze_learning_event(learning, settings):
     samples = learning.get("samples") or []
     event_at = learning.get("event_at")
     if event_at is None:
-        return None, "NO EVENT"
+        return None, "No marked event"
 
     window_start = event_at - LEARNING_EVENT_EARLY_SECONDS
     window_end = event_at + LEARNING_EVENT_LATE_SECONDS
@@ -706,7 +706,7 @@ def analyze_learning_event(learning, settings):
     baseline_1 = settings.get("base_distance_1_cm") or filtered_max(pre_1)
     baseline_2 = settings.get("base_distance_2_cm") or filtered_max(pre_2)
     if baseline_1 is None or baseline_2 is None or not window_1 or not window_2:
-        return None, "NO DATA"
+        return None, "No sensor data - try again"
 
     min_1 = min(window_1)
     min_2 = min(window_2)
@@ -714,12 +714,12 @@ def analyze_learning_event(learning, settings):
     drop_2 = max(0.0, float(baseline_2) - min_2)
     min_drop = min(drop_1, drop_2)
     if min_drop < LEARNING_MIN_DROP_CM:
-        return None, "NO DROP"
+        return None, "No sensor event detected - try again"
 
     cross_1 = learning_crossing_time(samples, "d1", float(baseline_1), drop_1, event_at)
     cross_2 = learning_crossing_time(samples, "d2", float(baseline_2), drop_2, event_at)
     if cross_1 is None or cross_2 is None:
-        return None, "PARTIAL"
+        return None, "Only one sensor detected - try again"
 
     learned_order = SENSOR_ORDER_AB if cross_1 <= cross_2 else SENSOR_ORDER_BA
     first_cross = min(cross_1, cross_2)
@@ -781,7 +781,7 @@ def analyze_learning_event(learning, settings):
         "drop_2_cm": round(drop_2, 1),
         "delay_seconds": round(delay_seconds, 2),
         "duration_seconds": round(event_duration_seconds, 2),
-    }, "LEARN OK"
+    }, f"Learned event {learning.get('event_count') or 0}"
 
 
 def median_learning_value(results, key):
