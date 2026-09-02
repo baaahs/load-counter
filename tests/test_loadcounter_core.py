@@ -1,4 +1,6 @@
 import sys
+import threading
+import time
 import types
 import unittest
 
@@ -63,6 +65,40 @@ class LoadCounterCoreTests(unittest.TestCase):
         self.assertEqual(distance, 164)
         self.assertTrue(ignored)
         self.assertEqual(last_valid, 164)
+
+    def test_sensor_pair_sampler_reads_both_sensors_and_can_pause(self):
+        class FakeSensor:
+            def __init__(self, value):
+                self.value = value
+                self.reads = 0
+                self.lock = threading.Lock()
+
+            @property
+            def distance(self):
+                time.sleep(0.005)
+                with self.lock:
+                    self.reads += 1
+                return self.value
+
+        sensor_1 = FakeSensor(101)
+        sensor_2 = FakeSensor(202)
+        sampler = self.core.SensorPairSampler(sensor_1, sensor_2, stagger_seconds=0.002)
+        try:
+            values, versions, errors = sampler.wait_for_pair(timeout=0.2)
+            self.assertEqual(values, (101, 202))
+            self.assertTrue(all(version >= 1 for version in versions))
+            self.assertEqual(errors, (None, None))
+
+            sampler.pause()
+            paused_reads = (sensor_1.reads, sensor_2.reads)
+            time.sleep(0.02)
+            self.assertEqual((sensor_1.reads, sensor_2.reads), paused_reads)
+
+            sampler.resume()
+            _, resumed_versions, _ = sampler.wait_for_pair(versions, timeout=0.2)
+            self.assertTrue(all(new > old for new, old in zip(resumed_versions, versions)))
+        finally:
+            sampler.close()
 
     def test_learning_event_learns_all_detection_parameters(self):
         learning = self.core.default_learning_state()
@@ -263,7 +299,7 @@ class LoadCounterCoreTests(unittest.TestCase):
         ])
 
         self.assertEqual(sum(event["counted"] for event in events), 1)
-        self.assertEqual(state["last_counted_at"], 0.36)
+        self.assertEqual(state["last_counted_at"], 0.3)
         self.assertIsNone(state["sensor1_triggered_at"])
 
     def test_wrong_direction_does_not_count_when_b_is_already_blocked(self):
@@ -359,7 +395,7 @@ class LoadCounterCoreTests(unittest.TestCase):
         self.assertEqual(sum(event["counted"] for event in strict_events), 0)
         self.assertIsNone(strict_state["last_counted_at"])
         self.assertEqual(sum(event["counted"] for event in sensitive_events), 1)
-        self.assertEqual(sensitive_state["last_counted_at"], 0.26)
+        self.assertEqual(sensitive_state["last_counted_at"], 0.2)
 
     def test_neutral_margin_requires_full_neutral_before_rearming(self):
         settings = self.trigger_settings()
@@ -386,7 +422,7 @@ class LoadCounterCoreTests(unittest.TestCase):
         self.assertEqual(sum(event["counted"] for event in events), 2)
         self.assertFalse(any(event["counted"] for event in events[4:8]))
         self.assertTrue(events[9]["rearmed"])
-        self.assertEqual(state["last_counted_at"], 1.86)
+        self.assertEqual(state["last_counted_at"], 1.8)
 
     def test_larger_neutral_margin_rearms_when_sensors_are_near_baseline(self):
         settings = self.trigger_settings()
@@ -409,21 +445,33 @@ class LoadCounterCoreTests(unittest.TestCase):
 
         self.assertEqual(sum(event["counted"] for event in events), 2)
         self.assertTrue(events[5]["rearmed"])
-        self.assertEqual(state["last_counted_at"], 0.96)
+        self.assertEqual(state["last_counted_at"], 0.9)
 
     def test_sensor_b_must_stay_triggered_through_debounce_window(self):
         events, state = self.run_trigger_stream([
             (0.0, 100, 100),
             (0.1, 70, 100),
-            (0.2, 70, 70),
+            (0.2, 70, 78),
             (0.23, 70, 100),
-            (0.4, 70, 70),
-            (0.46, 70, 70),
+            (0.4, 70, 78),
+            (0.46, 70, 78),
         ])
 
         self.assertFalse(events[2]["counted"])
         self.assertEqual(sum(event["counted"] for event in events), 1)
         self.assertEqual(state["last_counted_at"], 0.46)
+
+    def test_deep_sensor_b_reading_counts_in_one_sample(self):
+        events, state = self.run_trigger_stream([
+            (0.0, 100, 100),
+            (0.1, 70, 100),
+            (0.2, 70, 70),
+            (0.3, 100, 100),
+        ])
+
+        self.assertTrue(events[2]["counted"])
+        self.assertEqual(sum(event["counted"] for event in events), 1)
+        self.assertEqual(state["last_counted_at"], 0.2)
 
     def test_sensor_b_must_be_neutral_after_sensor_a_before_counting(self):
         events, state = self.run_trigger_stream(
@@ -472,7 +520,7 @@ class LoadCounterCoreTests(unittest.TestCase):
 
         self.assertEqual(sum(event["counted"] for event in events), 2)
         self.assertTrue(any(event["cooldown_active"] for event in events))
-        self.assertEqual(state["last_counted_at"], 2.86)
+        self.assertEqual(state["last_counted_at"], 2.8)
 
     def test_saved_ba_order_counts_physical_sensor_2_then_sensor_1(self):
         events, state = self.run_trigger_stream(
@@ -486,7 +534,7 @@ class LoadCounterCoreTests(unittest.TestCase):
         )
 
         self.assertEqual(sum(event["counted"] for event in events), 1)
-        self.assertEqual(state["last_counted_at"], 0.36)
+        self.assertEqual(state["last_counted_at"], 0.3)
 
     def test_ignored_high_reading_does_not_replace_last_valid_distance(self):
         events, _ = self.run_trigger_stream([
@@ -498,7 +546,7 @@ class LoadCounterCoreTests(unittest.TestCase):
 
         self.assertTrue(events[1]["ignored_2"])
         self.assertFalse(events[1]["counted"])
-        self.assertTrue(events[3]["counted"])
+        self.assertTrue(events[2]["counted"])
 
 
 if __name__ == "__main__":

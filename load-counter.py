@@ -2,6 +2,7 @@ import json
 import math
 import os
 import random
+import threading
 import time
 from datetime import datetime
 
@@ -63,6 +64,10 @@ LEARNING_TIMEOUT_MARGIN_SECONDS = 1.0
 LEARNING_COOLDOWN_MARGIN_SECONDS = 1.5
 NEUTRAL_REARM_SECONDS = 0.25
 TRIGGER_DEBOUNCE_SECONDS = 0.05
+FAST_TRIGGER_MARGIN_CM = 5
+SENSOR_STAGGER_SECONDS = 0.05
+SENSOR_PAIR_WAIT_SECONDS = 0.5
+SENSOR_LOG_INTERVAL_SECONDS = 1.0
 IGNORE_MARGIN_CM = 1
 CALIBRATION_CLUSTER_SPAN_CM = 5
 BDF_GLYPHS = {}
@@ -518,6 +523,90 @@ def effective_distance(distance, baseline, last_valid_distance):
         return last_valid_distance, True, last_valid_distance
 
     return distance, False, distance
+
+
+class SensorPairSampler:
+    def __init__(self, sensor_1, sensor_2, stagger_seconds=SENSOR_STAGGER_SECONDS):
+        self._sensors = (sensor_1, sensor_2)
+        self._stagger_seconds = max(0.0, stagger_seconds)
+        self._condition = threading.Condition()
+        self._enabled = (threading.Event(), threading.Event())
+        self._sensor_locks = (threading.Lock(), threading.Lock())
+        self._stopped = threading.Event()
+        self._values = [None, None]
+        self._versions = [0, 0]
+        self._errors = [None, None]
+        self._threads = tuple(
+            threading.Thread(
+                target=self._sample_sensor,
+                args=(index,),
+                name=f"loadcounter-sensor-{index + 1}",
+                daemon=True,
+            )
+            for index in range(2)
+        )
+        for thread in self._threads:
+            thread.start()
+        self.resume()
+
+    def _sample_sensor(self, index):
+        enabled = self._enabled[index]
+        sensor_lock = self._sensor_locks[index]
+        while not self._stopped.is_set():
+            enabled.wait()
+            if self._stopped.is_set():
+                return
+
+            with sensor_lock:
+                if not enabled.is_set():
+                    continue
+                try:
+                    value = self._sensors[index].distance
+                    error = None
+                except Exception as exc:
+                    value = None
+                    error = str(exc)
+
+            with self._condition:
+                self._values[index] = value
+                self._versions[index] += 1
+                self._errors[index] = error
+                self._condition.notify_all()
+
+    def wait_for_pair(self, previous_versions=(0, 0), timeout=SENSOR_PAIR_WAIT_SECONDS):
+        previous_versions = tuple(previous_versions)
+        with self._condition:
+            self._condition.wait_for(
+                lambda: self._stopped.is_set()
+                or all(
+                    version > previous
+                    for version, previous in zip(self._versions, previous_versions)
+                ),
+                timeout=timeout,
+            )
+            return tuple(self._values), tuple(self._versions), tuple(self._errors)
+
+    def pause(self):
+        for enabled in self._enabled:
+            enabled.clear()
+        for sensor_lock in self._sensor_locks:
+            with sensor_lock:
+                pass
+
+    def resume(self):
+        self._enabled[0].set()
+        if self._stagger_seconds:
+            time.sleep(self._stagger_seconds)
+        self._enabled[1].set()
+
+    def close(self):
+        self._stopped.set()
+        for enabled in self._enabled:
+            enabled.set()
+        with self._condition:
+            self._condition.notify_all()
+        for thread in self._threads:
+            thread.join(timeout=1.0)
 
 
 def calibrate_base_distances(us100_1, us100_2, duration_seconds=CALIBRATION_SECONDS, progress_callback=None):
@@ -1499,6 +1588,10 @@ def process_counter_sample(
 
     sensor_a_triggered = sensor_a_distance is not None and sensor_a_distance < sensor_a_trigger_threshold
     sensor_b_triggered = sensor_b_distance is not None and sensor_b_distance < sensor_b_trigger_threshold
+    sensor_b_deep_triggered = (
+        sensor_b_distance is not None
+        and sensor_b_distance <= sensor_b_trigger_threshold - FAST_TRIGGER_MARGIN_CM
+    )
     sensor_a_neutral = sensor_a_distance is not None and sensor_a_distance >= sensor_a_neutral_threshold
     sensor_b_neutral = sensor_b_distance is not None and sensor_b_distance >= sensor_b_neutral_threshold
     both_neutral = sensor_a_neutral and sensor_b_neutral
@@ -1553,7 +1646,10 @@ def process_counter_sample(
         if sensor_b_triggered and state["sensor_b_neutral_after_sensor_a"]:
             if state["sensor_b_triggered_since"] is None:
                 state["sensor_b_triggered_since"] = now
-            if now - state["sensor_b_triggered_since"] >= TRIGGER_DEBOUNCE_SECONDS:
+            if (
+                sensor_b_deep_triggered
+                or now - state["sensor_b_triggered_since"] >= TRIGGER_DEBOUNCE_SECONDS
+            ):
                 state["last_counted_at"] = now
                 wait_for_neutral()
                 state["mode"] = "cooldown"
@@ -1654,7 +1750,16 @@ def parse_direct_sensor_order(command):
     return None
 
 
-def run_calibration(settings, matrix, offscreen_canvas, debug_font, us100_1, us100_2, persist=True):
+def run_calibration(
+    settings,
+    matrix,
+    offscreen_canvas,
+    debug_font,
+    us100_1,
+    us100_2,
+    persist=True,
+    sensor_sampler=None,
+):
     def update_calibration_display(progress):
         nonlocal offscreen_canvas
         render_calibrating_display(
@@ -1678,12 +1783,18 @@ def run_calibration(settings, matrix, offscreen_canvas, debug_font, us100_1, us1
         sensor_order=settings["sensor_order"],
     )
     offscreen_canvas = matrix.SwapOnVSync(offscreen_canvas)
-    base_1, base_2 = calibrate_base_distances(
-        us100_1,
-        us100_2,
-        duration_seconds=CALIBRATION_SECONDS,
-        progress_callback=update_calibration_display,
-    )
+    if sensor_sampler is not None:
+        sensor_sampler.pause()
+    try:
+        base_1, base_2 = calibrate_base_distances(
+            us100_1,
+            us100_2,
+            duration_seconds=CALIBRATION_SECONDS,
+            progress_callback=update_calibration_display,
+        )
+    finally:
+        if sensor_sampler is not None:
+            sensor_sampler.resume()
     if base_1 is None or base_2 is None:
         return settings, offscreen_canvas, False
 
@@ -1913,6 +2024,10 @@ if settings["base_distance_1_cm"] is None or settings["base_distance_2_cm"] is N
         flush=True,
     )
     draft_settings = sanitize_settings(settings)
+sensor_sampler = SensorPairSampler(us100_1, us100_2)
+sensor_sample_versions = (0, 0)
+sensor_log_versions = (0, 0)
+last_sensor_log_at = time.time()
 offscreen_canvas = fade_boot_to_counter(
     matrix,
     offscreen_canvas,
@@ -1992,6 +2107,7 @@ while True:
                     us100_1,
                     us100_2,
                     persist=False,
+                    sensor_sampler=sensor_sampler,
                 )
                 if calibrated:
                     reset_learning_after_calibration(learning, learning_draft)
@@ -2010,6 +2126,7 @@ while True:
                 debug_font,
                 us100_1,
                 us100_2,
+                sensor_sampler=sensor_sampler,
             )
             direct_settings_changed = calibrated
             direct_status = "CAL OK" if calibrated else "CAL FAIL"
@@ -2160,12 +2277,16 @@ while True:
                             sensor_order=draft_settings["sensor_order"],
                         )
                         offscreen_canvas = matrix.SwapOnVSync(offscreen_canvas)
-                        base_1, base_2 = calibrate_base_distances(
-                            us100_1,
-                            us100_2,
-                            duration_seconds=CALIBRATION_SECONDS,
-                            progress_callback=update_calibration_display,
-                        )
+                        sensor_sampler.pause()
+                        try:
+                            base_1, base_2 = calibrate_base_distances(
+                                us100_1,
+                                us100_2,
+                                duration_seconds=CALIBRATION_SECONDS,
+                                progress_callback=update_calibration_display,
+                            )
+                        finally:
+                            sensor_sampler.resume()
                         if base_1 is not None and base_2 is not None:
                             draft_settings["base_distance_1_cm"] = base_1
                             draft_settings["base_distance_2_cm"] = base_2
@@ -2339,8 +2460,25 @@ while True:
     active_settings = draft_settings if menu_open else settings
     current_brightness_percent = apply_matrix_brightness(matrix, active_settings, current_brightness_percent)
 
-    raw_distance1 = us100_1.distance
-    raw_distance2 = us100_2.distance
+    sensor_values, new_sample_versions, sensor_errors = sensor_sampler.wait_for_pair(
+        sensor_sample_versions
+    )
+    if new_sample_versions == sensor_sample_versions:
+        if any(sensor_errors):
+            print(f"Sensor sampling stalled: {sensor_errors}", flush=True)
+        continue
+    sensor_sample_versions = new_sample_versions
+    raw_distance1, raw_distance2 = sensor_values
+    now = time.time()
+    if raw_distance1 is None or raw_distance2 is None:
+        if now - last_sensor_log_at >= SENSOR_LOG_INTERVAL_SECONDS:
+            print(
+                f"Sensor read failed: d1={raw_distance1!r} d2={raw_distance2!r} errors={sensor_errors}",
+                flush=True,
+            )
+            last_sensor_log_at = now
+            sensor_log_versions = sensor_sample_versions
+        continue
     baseline_1 = active_settings["base_distance_1_cm"]
     baseline_2 = active_settings["base_distance_2_cm"]
     filtered_distance1, distance1_ignored, last_valid_distance1 = effective_distance(raw_distance1, baseline_1, last_valid_distance1)
@@ -2444,11 +2582,18 @@ while True:
                     status_message=status_message,
                 )
 
-    print(
-        f"d1={distance1:.0f}cm{' ignored' if distance1_ignored else ''} "
-        f"d2={distance2:.0f}cm{' ignored' if distance2_ignored else ''} count={counter}",
-        flush=True,
-    )
+    if active_settings["debug_mode"] or now - last_sensor_log_at >= SENSOR_LOG_INTERVAL_SECONDS:
+        sample_elapsed = max(0.001, now - last_sensor_log_at)
+        rate_1 = (sensor_sample_versions[0] - sensor_log_versions[0]) / sample_elapsed
+        rate_2 = (sensor_sample_versions[1] - sensor_log_versions[1]) / sample_elapsed
+        print(
+            f"d1={distance1:.0f}cm{' ignored' if distance1_ignored else ''} "
+            f"d2={distance2:.0f}cm{' ignored' if distance2_ignored else ''} "
+            f"rate={rate_1:.1f}/{rate_2:.1f}Hz count={counter}",
+            flush=True,
+        )
+        last_sensor_log_at = now
+        sensor_log_versions = sensor_sample_versions
     last_learning_state_json = publish_learning_state(
         LEARNING_STATE_PATH,
         learning,
