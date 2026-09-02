@@ -1,4 +1,5 @@
 import importlib.util
+import base64
 import json
 import os
 import sys
@@ -74,6 +75,51 @@ class LoadCounterBleTests(unittest.TestCase):
     def test_normalize_command_rejects_unknown_commands(self):
         with self.assertRaises(ValueError):
             self.ble.normalize_command("not_a_real_command")
+
+    def test_wifi_command_preserves_case_and_credentials(self):
+        payload = base64.b64encode(
+            json.dumps({"s": "Julien Hotspot", "p": "CaseSensitive42"}).encode("utf-8")
+        ).decode("ascii")
+        command = f"wifi:{payload}"
+
+        normalized = self.ble.normalize_command(command)
+
+        self.assertEqual(normalized, command)
+        self.assertEqual(
+            self.ble.wifi_credentials(normalized),
+            ("Julien Hotspot", "CaseSensitive42"),
+        )
+
+    def test_wifi_command_rejects_short_password(self):
+        payload = base64.b64encode(
+            json.dumps({"s": "Julien Hotspot", "p": "short"}).encode("utf-8")
+        ).decode("ascii")
+
+        with self.assertRaisesRegex(ValueError, "8-63"):
+            self.ble.normalize_command(f"wifi:{payload}")
+
+    def test_connect_wifi_uses_network_manager_without_toggling_wifi(self):
+        result = types.SimpleNamespace(returncode=0, stdout="", stderr="")
+        with mock.patch.object(self.ble.subprocess, "run", return_value=result) as run:
+            self.ble.connect_wifi("Julien Hotspot", "CaseSensitive42")
+
+        run.assert_called_once_with(
+            [
+                "nmcli",
+                "--wait",
+                "30",
+                "device",
+                "wifi",
+                "connect",
+                "Julien Hotspot",
+                "password",
+                "CaseSensitive42",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=35,
+        )
 
     def test_write_command_is_atomic_json(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -245,6 +291,33 @@ class LoadCounterBleTests(unittest.TestCase):
         self.assertLessEqual(len(encoded), 512)
         self.assertNotIn("settings", payload)
         self.assertEqual(payload["learning"], learning)
+
+    def test_state_payload_omits_settings_when_wifi_error_would_exceed_gatt_limit(self):
+        settings = {
+            "trigger_distance_cm": 150,
+            "neutral_margin_cm": 8,
+            "timeout_ms": 2000,
+            "cooldown_ms": 10000,
+            "brightness_percent": 100,
+            "debug_mode": False,
+            "sensor_order": "A/B",
+            "base_distance_1_cm": 450,
+            "base_distance_2_cm": 450,
+        }
+        with mock.patch.object(self.ble, "service_status", return_value="active"), mock.patch.object(
+            self.ble,
+            "load_counter",
+            return_value=710,
+        ), mock.patch.object(self.ble, "load_settings", return_value=settings), mock.patch.object(
+            self.ble,
+            "load_learning_state",
+            return_value=self.ble.default_learning_state(),
+        ):
+            payload = self.ble.state_payload(f"wifi:error:{'x' * 120}")
+
+        encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        self.assertLessEqual(len(encoded), self.ble.MAX_GATT_ATTRIBUTE_BYTES)
+        self.assertNotIn("settings", payload)
 
     def test_apply_service_command_stops_program_without_stopping_ble(self):
         calls = []

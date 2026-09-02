@@ -93,6 +93,10 @@ ios/LoadCounterRemote/LoadCounterRemote.xcodeproj
 Run it on the iPhone, then tap Connect. The Pi advertises as `LoadCounter`
 through the `loadcounter-ble.service` systemd service.
 
+The Wi-Fi section can send a new network name and password to the Pi over
+Bluetooth, even while the counter program is stopped. The Bluetooth service
+stays running during the network change, and Wi-Fi is never switched off.
+
 ### Test sensors
 
 ```

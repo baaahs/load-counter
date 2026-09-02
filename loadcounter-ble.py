@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 import asyncio
+import base64
 import json
 import os
 import signal
 import subprocess
+import threading
 import time
 from datetime import datetime
 
@@ -57,6 +59,9 @@ MAX_BRIGHTNESS_PERCENT = 100
 MAX_COUNTER = 999999
 MAX_HISTORY_CURSOR = 10_000_000
 MAX_HISTORY_PAGE_BYTES = 480
+MAX_GATT_ATTRIBUTE_BYTES = 512
+MAX_WIFI_SSID_BYTES = 32
+MAX_WIFI_PASSWORD_BYTES = 63
 SENSOR_ORDER_AB = "A/B"
 SENSOR_ORDER_BA = "B/A"
 
@@ -144,6 +149,33 @@ def normalize_sensor_order(raw_value):
     raise ValueError(f"invalid sensor order: {raw_value}")
 
 
+def wifi_credentials(command_text):
+    raw_command = command_text.strip()
+    if not raw_command.lower().startswith("wifi:"):
+        raise ValueError("invalid Wi-Fi command")
+    try:
+        encoded = raw_command.split(":", 1)[1]
+        payload = json.loads(base64.b64decode(encoded, validate=True).decode("utf-8"))
+    except (ValueError, TypeError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("invalid Wi-Fi configuration") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("invalid Wi-Fi configuration")
+
+    ssid = payload.get("s")
+    password = payload.get("p")
+    if not isinstance(ssid, str) or not isinstance(password, str):
+        raise ValueError("Wi-Fi name and password are required")
+    ssid_bytes = ssid.encode("utf-8")
+    password_bytes = password.encode("utf-8")
+    if not 1 <= len(ssid_bytes) <= MAX_WIFI_SSID_BYTES or any(char in ssid for char in "\r\n\0"):
+        raise ValueError("Wi-Fi name must be 1-32 bytes")
+    if password_bytes and not 8 <= len(password_bytes) <= MAX_WIFI_PASSWORD_BYTES:
+        raise ValueError("Wi-Fi password must be empty or 8-63 bytes")
+    if any(char in password for char in "\r\n\0"):
+        raise ValueError("Wi-Fi password contains unsupported characters")
+    return ssid, password
+
+
 def load_counter():
     try:
         with open(COUNTER_STATE_PATH, "r", encoding="utf-8") as handle:
@@ -205,9 +237,13 @@ def load_settings():
 
 
 def normalize_command(command_text):
-    command = command_text.strip().lower()
-    if not command:
+    raw_command = command_text.strip()
+    if not raw_command:
         raise ValueError("empty command")
+    if raw_command.lower().startswith("wifi:"):
+        wifi_credentials(raw_command)
+        return raw_command
+    command = raw_command.lower()
     if command == "open_menu":
         return "menu_open"
     if command in ("close_menu", "cancel_menu"):
@@ -315,6 +351,39 @@ def service_status(service_name):
     )
     status = (result.stdout or "").strip()
     return status or "unknown"
+
+
+def connect_wifi(ssid, password):
+    command = ["nmcli", "--wait", "30", "device", "wifi", "connect", ssid]
+    if password:
+        command.extend(["password", password])
+    result = subprocess.run(
+        command,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=35,
+    )
+    if result.returncode != 0:
+        details = (result.stderr or result.stdout or "").strip().replace("\n", " ")
+        raise RuntimeError((details or "could not connect to Wi-Fi")[:120])
+
+
+def start_wifi_connection(command, status):
+    ssid, password = wifi_credentials(command)
+    status.set_text(f"wifi:connecting:{ssid}")
+
+    def connect():
+        try:
+            connect_wifi(ssid, password)
+        except Exception as exc:
+            status.set_text(f"wifi:error:{str(exc)[:120]}")
+            print(f"Wi-Fi connection failed for {ssid!r}: {exc}", flush=True)
+            return
+        status.set_text(f"wifi:connected:{ssid}")
+        print(f"Wi-Fi connected to {ssid!r}", flush=True)
+
+    threading.Thread(target=connect, name="loadcounter-wifi", daemon=True).start()
 
 
 def save_idle_learning_state():
@@ -524,6 +593,9 @@ def state_payload(status_text):
             key: learning[key]
             for key in ("active", "event_count", "phase", "status")
         }
+    encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    if len(encoded) > MAX_GATT_ATTRIBUTE_BYTES:
+        payload.pop("settings", None)
     return payload
 
 
@@ -596,13 +668,17 @@ class CommandCharacteristic(ServiceInterface):
             command = normalize_command(text)
             if command.startswith("history:"):
                 self.history.set_cursor(int(command.split(":", 1)[1]))
+            elif command.lower().startswith("wifi:"):
+                start_wifi_connection(command, self.status)
+                print("Accepted Wi-Fi configuration over BLE", flush=True)
+                return
             elif command in SERVICE_COMMANDS:
                 apply_service_command(command)
             else:
                 write_command(command)
         except Exception as exc:
             self.status.set_text(f"error: {exc}")
-            print(f"Rejected BLE command {list(value)!r}: {exc}", flush=True)
+            print(f"Rejected BLE command: {exc}", flush=True)
             raise DBusError("org.bluez.Error.Failed", str(exc)) from exc
 
         self.status.set_text(f"ok: {command}")

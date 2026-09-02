@@ -94,6 +94,7 @@ final class BluetoothController: NSObject, ObservableObject {
     @Published var historyError: String?
     @Published var lastHistorySync: Date?
     @Published var isUsingSampleHistory = false
+    @Published var wifiStatus = "Ready to configure"
 
     private var central: CBCentralManager!
     private var peripheral: CBPeripheral?
@@ -264,6 +265,33 @@ final class BluetoothController: NSObject, ObservableObject {
         }
     }
 
+    func connectWiFi(ssid: String, password: String) {
+        let payload = ["s": ssid, "p": password]
+        guard
+            let json = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+        else {
+            wifiStatus = "Could not prepare Wi-Fi settings"
+            return
+        }
+        let command = "wifi:\(json.base64EncodedString())"
+        guard let peripheral else {
+            wifiStatus = "Bluetooth disconnected"
+            return
+        }
+        let maximumLength = peripheral.maximumWriteValueLength(for: .withResponse)
+        guard command.utf8.count <= maximumLength else {
+            wifiStatus = "Network name or password is too long"
+            return
+        }
+        wifiStatus = "Connecting to \(ssid)"
+        send(command, feedback: "Connecting to \(ssid)")
+        for delay in [1.0, 3.0, 6.0, 12.0, 22.0, 34.0] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                self?.refreshState()
+            }
+        }
+    }
+
     private func sentDescription(for command: String) -> String {
         if command.starts(with: "brightness:") {
             return "Brightness \(command.split(separator: ":").last ?? "")%"
@@ -329,6 +357,23 @@ final class BluetoothController: NSObject, ObservableObject {
             return nil
         }
 
+        if trimmedStatus.starts(with: "wifi:") {
+            let parts = trimmedStatus.split(separator: ":", maxSplits: 2).map(String.init)
+            guard parts.count == 3 else {
+                return "Wi-Fi status unavailable"
+            }
+            switch parts[1] {
+            case "connecting":
+                return "Connecting to \(parts[2])"
+            case "connected":
+                return "Connected to \(parts[2])"
+            case "error":
+                return "Wi-Fi error: \(displayText(for: parts[2]))"
+            default:
+                return "Wi-Fi status unavailable"
+            }
+        }
+
         if trimmedStatus.starts(with: "ok:") {
             let command = trimmedStatus
                 .dropFirst(3)
@@ -375,6 +420,9 @@ final class BluetoothController: NSObject, ObservableObject {
             deviceState = state
             if let status = userFacingStatus(state.status) {
                 lastMessage = status
+                if state.status.starts(with: "wifi:") {
+                    wifiStatus = status
+                }
             }
         } catch {
             if let text = String(data: data, encoding: .utf8), !text.isEmpty {

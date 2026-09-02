@@ -16,6 +16,9 @@ struct ContentView: View {
     @State private var brightness = 100.0
     @State private var sensorOrder = "A/B"
     @State private var debugMode = false
+    @State private var wifiSSID = ""
+    @State private var wifiPassword = ""
+    @State private var showsWiFiPassword = false
 
     @State private var showDefaultsConfirmation = false
     @State private var showCalibrationConfirmation = false
@@ -37,6 +40,8 @@ struct ContentView: View {
         NavigationStack {
             List {
                 connectionSection
+                wifiSection
+                    .disabled(!bluetooth.isReady)
                 powerSection
                     .disabled(!bluetooth.isReady)
                 counterSection
@@ -159,6 +164,57 @@ struct ContentView: View {
             } label: {
                 Label("Play Count Animation", systemImage: "play.circle")
             }
+        }
+    }
+
+    private var wifiSection: some View {
+        Section("Wi-Fi") {
+            HStack(spacing: 12) {
+                Label("Network", systemImage: "wifi")
+                Spacer()
+                TextField("Name", text: $wifiSSID)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .multilineTextAlignment(.trailing)
+                    .frame(maxWidth: 190)
+            }
+
+            HStack(spacing: 12) {
+                Label("Password", systemImage: "key")
+                Spacer()
+                Group {
+                    if showsWiFiPassword {
+                        TextField("Password", text: $wifiPassword)
+                    } else {
+                        SecureField("Password", text: $wifiPassword)
+                    }
+                }
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .multilineTextAlignment(.trailing)
+                .frame(maxWidth: 160)
+
+                Button {
+                    showsWiFiPassword.toggle()
+                } label: {
+                    Image(systemName: showsWiFiPassword ? "eye.slash" : "eye")
+                        .accessibilityLabel(showsWiFiPassword ? "Hide password" : "Show password")
+                }
+                .buttonStyle(.plain)
+            }
+
+            Button {
+                bluetooth.connectWiFi(
+                    ssid: wifiSSID.trimmingCharacters(in: .whitespacesAndNewlines),
+                    password: wifiPassword
+                )
+            } label: {
+                Label("Connect to Network", systemImage: "wifi.circle.fill")
+            }
+            .disabled(!wifiConfigurationIsValid)
+
+            LabeledContent("Status", value: bluetooth.wifiStatus)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -494,6 +550,13 @@ struct ContentView: View {
             return "Ready for remote control"
         }
         return bluetooth.lastMessage
+    }
+
+    private var wifiConfigurationIsValid: Bool {
+        let ssidBytes = wifiSSID.trimmingCharacters(in: .whitespacesAndNewlines).utf8.count
+        let passwordBytes = wifiPassword.utf8.count
+        return (1...32).contains(ssidBytes)
+            && (passwordBytes == 0 || (8...63).contains(passwordBytes))
     }
 
     private var historySubtitle: String {
